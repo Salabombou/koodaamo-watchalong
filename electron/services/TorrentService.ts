@@ -3,7 +3,7 @@ import { SyncExtension, EXTENSION_NAME } from "../protocol/SyncExtension";
 import type { SyncCommand, Wire } from "../protocol/SyncExtension";
 import { EventEmitter } from "events";
 import rangeParser from "range-parser";
-import polyfill from "node-datachannel/polyfill";
+// import wrtc from "@roamhq/wrtc";
 import http from "http";
 import type { AddressInfo } from "net";
 
@@ -132,11 +132,19 @@ export class TorrentService extends EventEmitter {
 
   private async initClient() {
     const { default: WebTorrentClass } = await import("webtorrent");
+    let wrtc;
+    try {
+      const mod = await import("@roamhq/wrtc");
+      wrtc = mod.default || mod;
+    } catch (e) {
+      console.error("Failed to load @roamhq/wrtc", e);
+    }
+
     this.client = new WebTorrentClass({
       utp: true,
       dht: true, // Enable DHT for better peer discovery without trackers
       tracker: {
-        wrtc: polyfill,
+        wrtc: wrtc,
         config: {
           iceServers: [
             { urls: "stun:stun.l.google.com:19302" },

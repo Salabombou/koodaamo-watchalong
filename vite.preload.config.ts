@@ -4,7 +4,7 @@ import { builtinModules } from "module";
 export default defineConfig({
   build: {
     rollupOptions: {
-      external: ["electron", ...builtinModules],
+      external: ["electron", ...builtinModules, "webtorrent", "@roamhq/wrtc"],
       output: {
         entryFileNames: "[name].cjs",
       },

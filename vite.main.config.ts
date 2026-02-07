@@ -8,7 +8,7 @@ export default defineConfig({
         "electron",
         ...builtinModules,
         "webtorrent",
-        "../../../build/Release/node_datachannel.node",
+        /^node-datachannel/,
       ],
       output: {
         entryFileNames: "[name].cjs",

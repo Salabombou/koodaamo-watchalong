@@ -11,8 +11,8 @@ export default tseslint.config(
     ignores: [
       "dist",
       "out",
-      ".vite",
-      "node_modules",
+      "**/.vite",
+      "**/node_modules",
       "**/*.d.ts",
       "**/*.config.ts",
       "**/*.config.js",

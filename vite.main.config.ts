@@ -6,14 +6,7 @@ export default defineConfig({
     rollupOptions: {
       external: [
         "electron",
-        ...builtinModules,
-        "webtorrent",
-        "ffmpeg-static",
-        "ffprobe-static",
-        "electron-squirrel-startup",
-        "utp-native",
-        /^node-datachannel/,
-        "@achingbrain/nat-port-mapper",
+        ...builtinModules
       ],
       output: {
         entryFileNames: "[name].cjs",

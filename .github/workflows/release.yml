@@ -28,6 +28,8 @@ jobs:
     name: Publish
     needs: check
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     strategy:
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]

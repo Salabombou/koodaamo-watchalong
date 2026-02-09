@@ -132,19 +132,22 @@ export class TorrentService extends EventEmitter {
 
   private async initClient() {
     const { default: WebTorrentClass } = await import("webtorrent");
-    let wrtc;
+
+    let wtrc: typeof import("@roamhq/wrtc") | null = null;
     try {
-      // const mod = await import("@roamhq/wrtc");
-      // wrtc = mod.default || mod;
-    } catch (e) {
-      console.error("Failed to load @roamhq/wrtc", e);
+      wtrc = await import("@roamhq/wrtc");
+    } catch (e: unknown) {
+      console.warn(
+        "Failed to load @roamhq/wrtc, WebRTC support will be unavailable:",
+        e,
+      );
     }
 
     this.client = new WebTorrentClass({
       utp: true,
       dht: true, // Enable DHT for better peer discovery without trackers
       tracker: {
-        wrtc: wrtc,
+        wrtc: wtrc,
         config: {
           iceServers: [
             { urls: "stun:stun.l.google.com:19302" },

@@ -1,6 +1,6 @@
 import { spawn } from "child_process";
-import ffmpegPath from "ffmpeg-static";
-import ffprobePath from "ffprobe-static";
+import { app } from "electron";
+import { createRequire } from "module";
 import path from "path";
 
 export interface MediaAnalysis {
@@ -13,19 +13,26 @@ export interface MediaAnalysis {
   duration: number;
 }
 
+let ffmpegPath: string;
+let ffprobePath: string;
+if (app.isPackaged) {
+  // In packaged app, binaries are in resources
+  const resourcesPath = process.resourcesPath;
+  ffmpegPath = path.join(resourcesPath, "ffmpeg");
+  ffprobePath = path.join(resourcesPath, "ffprobe");
+} else {
+  const require = createRequire(import.meta.url);
+  ffmpegPath = require("ffmpeg-static");
+  ffprobePath = require("ffprobe-static").path;
+}
+
 export class MediaService {
   async analyze(filePath: string): Promise<MediaAnalysis> {
     console.log("Analyzing file:", filePath);
     return new Promise((resolve, reject) => {
-      if (!ffprobePath || !ffprobePath.path) {
-        return reject(new Error("ffprobe binary not found"));
-      }
+      console.log("Using ffprobe at:", ffprobePath);
 
-      // Fix for ASAR path if necessary (though usually handled by externalizing)
-      const binPath = ffprobePath.path.replace("app.asar", "app.asar.unpacked");
-      console.log("Using ffprobe at:", binPath);
-
-      const process = spawn(binPath, [
+      const process = spawn(ffprobePath, [
         // '-v', 'quiet', // Commented out to see errors
         "-print_format",
         "json",

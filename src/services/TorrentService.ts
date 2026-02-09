@@ -134,8 +134,8 @@ export class TorrentService extends EventEmitter {
     const { default: WebTorrentClass } = await import("webtorrent");
     let wrtc;
     try {
-      const mod = await import("@roamhq/wrtc");
-      wrtc = mod.default || mod;
+      // const mod = await import("@roamhq/wrtc");
+      // wrtc = mod.default || mod;
     } catch (e) {
       console.error("Failed to load @roamhq/wrtc", e);
     }
@@ -224,20 +224,48 @@ export class TorrentService extends EventEmitter {
 
   async seed(filePath: string, userTrackers: string[] = []): Promise<string> {
     const client = await this.clientReady;
+    console.log(`[TorrentService] Starting seed for file: ${filePath}`);
+    const startTime = Date.now();
+
     return new Promise((resolve) => {
       if (this.activeTorrent) this.cleanup();
 
       const trackers = [...DEFAULT_TRACKERS, ...userTrackers];
+      console.log(`[TorrentService] Trackers: ${trackers.join(", ")}`);
 
-      client.seed(
+      const t = client.seed(
         filePath,
         { announce: trackers },
         (torrent: WebTorrent.Torrent) => {
+          console.log(
+            `[TorrentService] Torrent creation complete! Took ${(Date.now() - startTime) / 1000}s`,
+          );
+          console.log(`[TorrentService] Magnet URI: ${torrent.magnetURI}`);
           this.handleTorrent(torrent);
           this.isHost = true;
           resolve(torrent.magnetURI);
         },
       );
+
+      t.on("infoHash", () => {
+        console.log(
+          `[TorrentService] InfoHash generated: ${t.infoHash} (Took ${(Date.now() - startTime) / 1000}s)`,
+        );
+      });
+
+      t.on("metadata", () => {
+        console.log(
+          `[TorrentService] Metadata ready (Took ${(Date.now() - startTime) / 1000}s)`,
+        );
+      });
+
+      t.on("warning", (err) => {
+        console.warn("[TorrentService] Warning during seed:", err);
+      });
+
+      t.on("error", (err) => {
+        console.error("[TorrentService] Error during seed:", err);
+      });
     });
   }
 

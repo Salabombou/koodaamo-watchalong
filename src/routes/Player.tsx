@@ -21,7 +21,7 @@ export default function Player() {
         console.log("Stream URL:", url);
         setStreamUrl(url);
       })
-      .catch((err) => console.error("Failed to get stream", err));
+      .catch((err: unknown) => console.error("Failed to get stream", err));
   }, []);
 
   // Initialize Player

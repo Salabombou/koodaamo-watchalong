@@ -1,9 +1,12 @@
 import { app, BrowserWindow, ipcMain, protocol } from "electron";
-import path from "path";
-import squirrelStartup from "electron-squirrel-startup";
+// import squirrelStartup from "electron-squirrel-startup";
+
 import { StorageService } from "./services/StorageService";
 import { MediaService } from "./services/MediaService";
 import { TorrentService } from "./services/TorrentService";
+
+declare const MAIN_WINDOW_WEBPACK_ENTRY: string;
+declare const MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY: string;
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -27,10 +30,9 @@ ipcMain.handle("get-node-version", () => {
   return process.version;
 });
 
-// const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
-if (squirrelStartup) {
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+if (require("electron-squirrel-startup")) {
   app.quit();
 }
 
@@ -41,20 +43,14 @@ const createWindow = () => {
     show: false,
     autoHideMenuBar: true,
     webPreferences: {
-      preload: path.join(__dirname, "preload.cjs"),
+      preload: MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY,
       nodeIntegration: false,
       contextIsolation: true,
     },
   });
 
   // Load the main app
-  if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
-    mainWindow.loadURL(MAIN_WINDOW_VITE_DEV_SERVER_URL);
-  } else {
-    mainWindow.loadFile(
-      path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`),
-    );
-  }
+  mainWindow.loadURL(MAIN_WINDOW_WEBPACK_ENTRY);
 
   // Wait for the main window to be ready
   mainWindow.once("ready-to-show", () => {
@@ -76,7 +72,7 @@ const createPlayerWindow = () => {
     height: 700,
     autoHideMenuBar: true,
     webPreferences: {
-      preload: path.join(__dirname, "preload.cjs"),
+      preload: MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY,
       nodeIntegration: false,
       contextIsolation: true,
     },
@@ -86,15 +82,7 @@ const createPlayerWindow = () => {
     playerWindow = null;
   });
 
-  if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
-    playerWindow.loadURL(`${MAIN_WINDOW_VITE_DEV_SERVER_URL}#/player`);
-  } else {
-    const indexPath = path.join(
-      __dirname,
-      `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`,
-    );
-    playerWindow.loadURL(`file://${indexPath}#/player`);
-  }
+  playerWindow.loadURL(MAIN_WINDOW_WEBPACK_ENTRY + "#/player");
 };
 
 app.on("ready", () => {

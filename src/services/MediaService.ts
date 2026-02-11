@@ -3,6 +3,8 @@ import { app } from "electron";
 import { createRequire } from "module";
 import path from "path";
 
+import logger from "../utilities/logging";
+
 export interface MediaAnalysis {
   needsNormalization: boolean;
   format: string;
@@ -28,12 +30,13 @@ if (app.isPackaged) {
 
 export class MediaService {
   async analyze(filePath: string): Promise<MediaAnalysis> {
-    console.log("Analyzing file:", filePath);
+    logger.info("Analyzing file:", filePath);
     return new Promise((resolve, reject) => {
-      console.log("Using ffprobe at:", ffprobePath);
+      logger.info("Using ffprobe at:", ffprobePath);
 
       const process = spawn(ffprobePath, [
-        // '-v', 'quiet', // Commented out to see errors
+        "-v",
+        "fatal",
         "-print_format",
         "json",
         "-show_format",
@@ -48,13 +51,13 @@ export class MediaService {
       process.stderr.on("data", (data) => (stderr += data));
 
       process.on("error", (err) => {
-        console.error("Spawn error:", err);
+        logger.error("Spawn error:", err);
         reject(new Error(`Failed to spawn ffprobe: ${err.message}`));
       });
 
       process.on("close", (code) => {
         if (code !== 0) {
-          console.error("ffprobe stderr:", stderr);
+          logger.error("ffprobe stderr:", stderr);
           return reject(
             new Error(`ffprobe failed with code ${code}: ${stderr}`),
           );
@@ -114,7 +117,7 @@ export class MediaService {
         const analysis = await this.analyze(filePath);
         duration = analysis.duration;
       } catch (_e) {
-        console.warn("Could not determine duration for progress tracking");
+        logger.warn("Could not determine duration for progress tracking");
       }
     }
 

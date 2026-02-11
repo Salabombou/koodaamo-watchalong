@@ -11,6 +11,7 @@ export default tseslint.config(
     ignores: [
       "dist",
       "out",
+      ".tmp",
       ".webpack/**",
       "**/.vite",
       "**/node_modules",

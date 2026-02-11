@@ -1,17 +1,20 @@
-import type WebTorrent from "webtorrent";
+import WebTorrent from "webtorrent";
 import { SyncExtension, EXTENSION_NAME } from "../protocol/SyncExtension";
 import type { SyncCommand, Wire } from "../protocol/SyncExtension";
 import { EventEmitter } from "events";
 import rangeParser from "range-parser";
-// import wrtc from "@roamhq/wrtc";
 import http from "http";
 import type { AddressInfo } from "net";
+import nodeDatachannelPolyfill from "node-datachannel/polyfill";
+import logger from "../utilities/logging";
 
 const DEFAULT_TRACKERS = [
   "wss://tracker.openwebtorrent.com",
   "wss://tracker.btorrent.xyz",
   "wss://tracker.files.fm:7073/announce",
   "wss://tracker.webtorrent.dev",
+  "wss://tracker.sloppyta.co:443/announce",
+  "wss://open.webtorrent.io",
 ];
 
 export class TorrentService extends EventEmitter {
@@ -22,9 +25,8 @@ export class TorrentService extends EventEmitter {
   isHost: boolean = false;
   private extensions: Set<SyncExtension> = new Set();
   private peerProgress: Map<string, number> = new Map();
-  private natClient: unknown = null;
-  private mappedPort: number | null = null;
   private lastEmit: number = 0;
+  private lastConsoleLog: number = 0;
 
   private server: http.Server | null = null;
   private streamPort: number = 0;
@@ -33,7 +35,7 @@ export class TorrentService extends EventEmitter {
     super();
     this.clientReady = this.initClient();
     this.clientReady.catch((err) => {
-      console.error("Failed to initialize WebTorrent client:", err);
+      logger.error("Failed to initialize WebTorrent client:", err);
     });
     this.startServer();
   }
@@ -57,8 +59,8 @@ export class TorrentService extends EventEmitter {
     this.server.listen(0, "127.0.0.1", () => {
       const addr = this.server!.address() as AddressInfo;
       this.streamPort = addr.port;
-      console.log(
-        `[TorrentService] Stream server listening on http://127.0.0.1:${this.streamPort}`,
+      logger.info(
+        `Stream server listening on http://127.0.0.1:${this.streamPort}`,
       );
     });
   }
@@ -70,6 +72,12 @@ export class TorrentService extends EventEmitter {
     if (!this.activeTorrent) {
       res.statusCode = 404;
       res.end("No active torrent");
+      return;
+    }
+
+    if (!this.activeTorrent || !this.activeTorrent.ready) {
+      res.statusCode = 503;
+      res.end("Torrent not ready");
       return;
     }
 
@@ -87,6 +95,8 @@ export class TorrentService extends EventEmitter {
       res.end("No video file found");
       return;
     }
+
+    file.select(); // Prioritize this file for downloading/streaming
 
     const rangeHeader = req.headers.range;
 
@@ -122,7 +132,7 @@ export class TorrentService extends EventEmitter {
     stream.pipe(res);
 
     stream.on("error", (err: unknown) => {
-      console.error("Stream error:", err);
+      logger.error(`Stream error:`, err);
       if (!res.headersSent) {
         res.statusCode = 500;
         res.end("Stream Error");
@@ -131,23 +141,16 @@ export class TorrentService extends EventEmitter {
   }
 
   private async initClient() {
-    const { default: WebTorrentClass } = await import("webtorrent");
-
-    let wtrc: typeof import("@roamhq/wrtc") | null = null;
-    try {
-      wtrc = await import("@roamhq/wrtc");
-    } catch (e: unknown) {
-      console.warn(
-        "Failed to load @roamhq/wrtc, WebRTC support will be unavailable:",
-        e,
-      );
-    }
-
-    this.client = new WebTorrentClass({
+    logger.info("Initializing WebTorrent client...");
+    logger.info(
+      `Using webtorrent (${WebTorrent.WEBRTC_SUPPORT ? "WebRTC" : "TCP/UDP"})`,
+    );
+    this.client = new WebTorrent({
       utp: true,
-      dht: true, // Enable DHT for better peer discovery without trackers
+      dht: true,
+      // @ts-expect-error -- types are wrong, but it does work
+      wrtc: nodeDatachannelPolyfill,
       tracker: {
-        wrtc: wtrc,
         config: {
           iceServers: [
             { urls: "stun:stun.l.google.com:19302" },
@@ -159,91 +162,36 @@ export class TorrentService extends EventEmitter {
     this.client!.setMaxListeners(20);
 
     this.client!.on("error", (err: unknown) => {
-      console.error("WebTorrent Client Error:", err);
+      logger.error(`WebTorrent Client Error:`, err);
       this.emit("error", err);
     });
 
-    this.client.on("torrent", (torrent) => {
-      console.log("Torrent added:", torrent.infoHash);
-      this.setupConnectivity();
+    this.client.on("torrent", (torrent: WebTorrent.Torrent) => {
+      logger.info(`Torrent added: ${torrent.infoHash}`);
     });
 
     return this.client!;
   }
 
-  private async setupConnectivity() {
-    if (!this.client) return;
-
-    // @ts-expect-error - address might be missing from types
-    const port = this.client.address().port;
-    console.log(`[TorrentService] Client listening on port ${port}`);
-
-    try {
-      const { upnpNat } = await import("@achingbrain/nat-port-mapper");
-      const client = upnpNat();
-
-      // Find a gateway (this is an async generator)
-      for await (const gateway of client.findGateways({
-        signal: AbortSignal.timeout(10000),
-      })) {
-        try {
-          // Map TCP
-          await gateway.mapAll(port, {
-            externalPort: port,
-            protocol: "TCP",
-            ttl: 3600,
-            description: "WatchAlong-P2P",
-          });
-
-          // Map UDP
-          await gateway.mapAll(port, {
-            externalPort: port,
-            protocol: "UDP",
-            ttl: 3600,
-            description: "WatchAlong-P2P-UDP",
-          });
-
-          this.mappedPort = port;
-          this.natClient = gateway;
-          console.log(`[NAT] UPnP Port Mapping successful: ${port} (TCP/UDP)`);
-
-          // Try to get external IP
-          try {
-            const externalIp = await gateway.externalIp();
-            console.log(`[NAT] External IP: ${externalIp}`);
-          } catch (_e) {
-            /* ignore */
-          }
-
-          break; // Stop searching if successful
-        } catch (err: unknown) {
-          console.warn("[NAT] UPnP Mapping failed:", err);
-        }
-      }
-    } catch (e: unknown) {
-      console.error("[NAT] Setup error:", e);
-    }
-  }
-
   async seed(filePath: string, userTrackers: string[] = []): Promise<string> {
     const client = await this.clientReady;
-    console.log(`[TorrentService] Starting seed for file: ${filePath}`);
+    logger.info(`Starting seed for file: ${filePath}`);
     const startTime = Date.now();
 
     return new Promise((resolve) => {
-      if (this.activeTorrent) this.cleanup();
+      //if (this.activeTorrent) this.cleanup();
 
       const trackers = [...DEFAULT_TRACKERS, ...userTrackers];
-      console.log(`[TorrentService] Trackers: ${trackers.join(", ")}`);
+      logger.info(`Trackers: ${trackers.join(", ")}`);
 
       const t = client.seed(
         filePath,
         { announce: trackers },
         (torrent: WebTorrent.Torrent) => {
-          console.log(
-            `[TorrentService] Torrent creation complete! Took ${(Date.now() - startTime) / 1000}s`,
+          logger.info(
+            `Torrent creation complete! Took ${(Date.now() - startTime) / 1000}s`,
           );
-          console.log(`[TorrentService] Magnet URI: ${torrent.magnetURI}`);
+          logger.info(`Magnet URI: ${torrent.magnetURI}`);
           this.handleTorrent(torrent);
           this.isHost = true;
           resolve(torrent.magnetURI);
@@ -251,30 +199,30 @@ export class TorrentService extends EventEmitter {
       );
 
       t.on("infoHash", () => {
-        console.log(
-          `[TorrentService] InfoHash generated: ${t.infoHash} (Took ${(Date.now() - startTime) / 1000}s)`,
+        logger.info(
+          `InfoHash generated: ${t.infoHash} (Took ${(Date.now() - startTime) / 1000}s)`,
         );
       });
 
       t.on("metadata", () => {
-        console.log(
-          `[TorrentService] Metadata ready (Took ${(Date.now() - startTime) / 1000}s)`,
+        logger.info(
+          `Metadata ready (Took ${(Date.now() - startTime) / 1000}s)`,
         );
       });
 
-      t.on("warning", (err) => {
-        console.warn("[TorrentService] Warning during seed:", err);
+      t.on("warning", (err: unknown) => {
+        logger.warn("Warning during seed:", err);
       });
 
-      t.on("error", (err) => {
-        console.error("[TorrentService] Error during seed:", err);
+      t.on("error", (err: unknown) => {
+        logger.error("Error during seed:", err);
       });
     });
   }
 
   async add(magnetURI: string): Promise<string> {
     const client = await this.clientReady;
-    if (this.activeTorrent) this.cleanup();
+    //if (this.activeTorrent) this.cleanup();
 
     const torrent = client.add(magnetURI);
 
@@ -325,24 +273,31 @@ export class TorrentService extends EventEmitter {
 
     // Register for new wires
     torrent.on("wire", (wire: Wire) => {
-      console.log("[TorrentService] New wire connected:", wire.peerId);
+      const remote = `${wire.remoteAddress}:${wire.remotePort}`;
+      logger.info(`New wire connected: ${wire.peerId} (${remote})`);
       wire.use(EXT);
+
+      wire.on("close", () => {
+        logger.info(`Wire disconnected: ${wire.peerId}`);
+      });
     });
 
-    // @ts-expect-error - wires property exists on Torrent
+    // @ts-expect-error - wires might be missing from types --- IGNORE ---
     if (torrent.wires) {
-      // @ts-expect-error - wires is array
+      // @ts-expect-error - wires might be missing from types --- IGNORE ---
       torrent.wires.forEach((wire: Wire) => {
-        console.log(
-          "[TorrentService] Attaching to existing wire:",
-          wire.peerId,
-        );
+        const remote = `${wire.remoteAddress}:${wire.remotePort}`;
+        logger.info(`Attaching to existing wire: ${wire.peerId} (${remote})`);
         wire.use(EXT);
+
+        wire.on("close", () => {
+          logger.info(`Wire disconnected: ${wire.peerId}`);
+        });
       });
     }
 
     torrent.on("done", () => {
-      console.log("[TorrentService] Torrent download/seed complete");
+      logger.info("Torrent download/seed complete");
       this.emitProgress(true);
       this.emit("done");
     });
@@ -361,9 +316,22 @@ export class TorrentService extends EventEmitter {
     return `http://127.0.0.1:${this.streamPort}/stream`;
   }
 
+  private async waitForReady(torrent: WebTorrent.Torrent) {
+    if (torrent.ready) return;
+    await new Promise<void>((resolve) => {
+      torrent.once("ready", () => resolve());
+    });
+  }
+
   async handleStreamRequest(request: Request): Promise<Response> {
     if (!this.activeTorrent) {
       return new Response("No active torrent", { status: 404 });
+    }
+
+    await this.waitForReady(this.activeTorrent);
+
+    if (!this.activeTorrent || !this.activeTorrent.ready) {
+      return new Response("Torrent not ready", { status: 503 });
     }
 
     const file = this.activeTorrent.files.find(
@@ -460,6 +428,22 @@ export class TorrentService extends EventEmitter {
     if (!this.activeTorrent) return;
 
     const now = Date.now();
+
+    // Verbose logging every 3s
+    if (now - this.lastConsoleLog > 3000) {
+      this.lastConsoleLog = now;
+      const role = this.isHost ? "Host/Seeder" : "Peer/Leecher";
+      const state = this.activeTorrent.done ? "Done" : "Active";
+      logger.info(
+        `[${role} - ${state}] ` +
+          `Progress: ${(this.activeTorrent.progress * 100).toFixed(1)}% ` +
+          `(${(this.activeTorrent.downloaded / 1024 / 1024).toFixed(1)} MB) | ` +
+          `Peers: ${this.activeTorrent.numPeers} | ` +
+          `Download ${(this.activeTorrent.downloadSpeed / 1024).toFixed(0)} KB/s | ` +
+          `Upload ${(this.activeTorrent.uploadSpeed / 1024).toFixed(0)} KB/s`,
+      );
+    }
+
     if (!force && now - this.lastEmit < 500) {
       return;
     }
@@ -476,24 +460,23 @@ export class TorrentService extends EventEmitter {
 
   broadcast(command: SyncCommand) {
     if (this.extensions.size === 0) {
-      console.warn("[TorrentService] No peers to broadcast to");
+      logger.warn("No peers to broadcast to");
     }
-    console.log(
-      `[TorrentService] Broadcasting ${command.type} to ${this.extensions.size} peers`,
+    logger.info(
+      `Broadcasting ${command.type} to ${this.extensions.size} peers`,
     );
     this.extensions.forEach((ext) => ext.send(command));
   }
 
-  cleanup() {
+  /*cleanup() {
     if (this.mappedPort && this.natClient) {
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (this.natClient as any).unmapAll(this.mappedPort, { protocol: "TCP" });
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (this.natClient as any).unmapAll(this.mappedPort, { protocol: "UDP" });
-        console.log(`[NAT] Released port ${this.mappedPort}`);
+        logger.info(`[NAT] Released port ${this.mappedPort}`);
       } catch (_e) {
-        /* ignore */
       }
       this.mappedPort = null;
       this.natClient = null;
@@ -504,5 +487,5 @@ export class TorrentService extends EventEmitter {
       this.activeTorrent = null;
     }
     this.extensions.clear();
-  }
+  }*/
 }

@@ -1,5 +1,5 @@
 import { app, BrowserWindow, ipcMain, protocol } from "electron";
-// import squirrelStartup from "electron-squirrel-startup";
+import logger from "./utilities/logging";
 
 import { StorageService } from "./services/StorageService";
 import { MediaService } from "./services/MediaService";
@@ -26,7 +26,7 @@ const mediaService = new MediaService();
 const torrentService = new TorrentService();
 
 ipcMain.handle("get-node-version", () => {
-  console.log("Renderer asked for node version");
+  logger.info("Renderer asked for node version");
   return process.version;
 });
 

@@ -29,6 +29,10 @@ const config: ForgeConfig = {
     new MakerZIP({}, ["darwin"]),
     new MakerRpm({}),
     new MakerDeb({}),
+    {
+      name: "@reforged/maker-appimage",
+      config: {},
+    },
   ],
   publishers: [
     new PublisherGithub({

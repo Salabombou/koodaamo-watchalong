@@ -76,6 +76,32 @@ const electronAPI = {
 
   // Windows
   openPlayerWindow: () => ipcRenderer.invoke("open-player-window"),
+
+  // Updates
+  restartApp: () => ipcRenderer.invoke("update:restart"),
+  onUpdateAvailable: (callback: () => void) => {
+    const subscription = () => callback();
+    ipcRenderer.on("update:available", subscription);
+    return () => ipcRenderer.removeListener("update:available", subscription);
+  },
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  onUpdateProgress: (callback: (progress: any) => void) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const subscription = (_: IpcRendererEvent, progress: any) =>
+      callback(progress);
+    ipcRenderer.on("update:progress", subscription);
+    return () => ipcRenderer.removeListener("update:progress", subscription);
+  },
+  onUpdateDownloaded: (callback: () => void) => {
+    const subscription = () => callback();
+    ipcRenderer.on("update:downloaded", subscription);
+    return () => ipcRenderer.removeListener("update:downloaded", subscription);
+  },
+  onUpdateError: (callback: (err: string) => void) => {
+    const subscription = (_: IpcRendererEvent, err: string) => callback(err);
+    ipcRenderer.on("update:error", subscription);
+    return () => ipcRenderer.removeListener("update:error", subscription);
+  },
 };
 
 contextBridge.exposeInMainWorld("electronAPI", electronAPI);

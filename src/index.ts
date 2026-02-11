@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain, protocol } from "electron";
+import { autoUpdater } from "electron-updater";
 import logger from "./utilities/logging";
 
 import { StorageService } from "./services/StorageService";
@@ -22,8 +23,31 @@ protocol.registerSchemesAsPrivileged([
 
 // Initialize Services
 let storageService: StorageService;
+logger.info("Initializing services...");
 const mediaService = new MediaService();
 const torrentService = new TorrentService();
+logger.info("Services initialized.");
+
+// Update Configuration
+autoUpdater.logger = logger;
+autoUpdater.autoDownload = true;
+
+// Fix for ENOENT: no such file or directory, open '...resources\app-update.yml'
+// Electron Forge does not generate this file, so we configure it programmatically.
+autoUpdater.setFeedURL({
+  provider: "github",
+  owner: "Salabombou",
+  repo: "koodaamo-watchalong",
+});
+
+// Global Error Handlers
+process.on("uncaughtException", (error) => {
+  logger.error("Uncaught Exception:", error);
+});
+
+process.on("unhandledRejection", (reason) => {
+  logger.error("Unhandled Rejection:", reason);
+});
 
 ipcMain.handle("get-node-version", () => {
   logger.info("Renderer asked for node version");
@@ -37,6 +61,7 @@ if (require("electron-squirrel-startup")) {
 }
 
 const createWindow = () => {
+  logger.info("Creating main window...");
   const mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -50,12 +75,21 @@ const createWindow = () => {
   });
 
   // Load the main app
+  logger.info(`Loading URL: ${MAIN_WINDOW_WEBPACK_ENTRY}`);
   mainWindow.loadURL(MAIN_WINDOW_WEBPACK_ENTRY);
 
   // Wait for the main window to be ready
   mainWindow.once("ready-to-show", () => {
+    logger.info("Main window ready to show");
     mainWindow.show();
   });
+
+  mainWindow.webContents.on(
+    "did-fail-load",
+    (event, errorCode, errorDescription) => {
+      logger.error(`Failed to load window: ${errorCode} - ${errorDescription}`);
+    },
+  );
 };
 
 let playerWindow: BrowserWindow | null = null;
@@ -86,6 +120,7 @@ const createPlayerWindow = () => {
 };
 
 app.on("ready", () => {
+  logger.info("App Ready event fired.");
   protocol.handle("stream", (req) => {
     return torrentService.handleStreamRequest(req);
   });
@@ -94,6 +129,14 @@ app.on("ready", () => {
   storageService.init().then(() => storageService.cleanup());
 
   createWindow();
+
+  // Check for updates
+  try {
+    logger.info("Checking for updates...");
+    autoUpdater.checkForUpdatesAndNotify();
+  } catch (err) {
+    logger.error("Error checking for updates:", err);
+  }
 });
 
 app.on("window-all-closed", () => {
@@ -176,6 +219,35 @@ ipcMain.on("torrent:broadcast", (_, cmd) => {
 
 ipcMain.handle("open-player-window", () => {
   createPlayerWindow();
+});
+
+ipcMain.handle("update:restart", () => {
+  autoUpdater.quitAndInstall();
+});
+
+// AutoUpdater events
+autoUpdater.on("update-available", () => {
+  BrowserWindow.getAllWindows().forEach((w) =>
+    w.webContents.send("update:available"),
+  );
+});
+
+autoUpdater.on("download-progress", (progressObj) => {
+  BrowserWindow.getAllWindows().forEach((w) =>
+    w.webContents.send("update:progress", progressObj),
+  );
+});
+
+autoUpdater.on("update-downloaded", () => {
+  BrowserWindow.getAllWindows().forEach((w) =>
+    w.webContents.send("update:downloaded"),
+  );
+});
+
+autoUpdater.on("error", (err) => {
+  BrowserWindow.getAllWindows().forEach((w) =>
+    w.webContents.send("update:error", err.message || err.toString()),
+  );
 });
 
 // Events

@@ -33,6 +33,11 @@ export interface ElectronAPI {
   onSyncCommand: (callback: (cmd: SyncCommand) => void) => () => void;
   onTorrentDone: (callback: () => void) => () => void;
   openPlayerWindow: () => Promise<void>;
+  restartApp: () => Promise<void>;
+  onUpdateAvailable: (callback: () => void) => () => void;
+  onUpdateProgress: (callback: (progress: any) => void) => () => void;
+  onUpdateDownloaded: (callback: () => void) => () => void;
+  onUpdateError: (callback: (err: string) => void) => () => void;
 }
 
 declare global {

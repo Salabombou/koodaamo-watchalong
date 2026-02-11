@@ -33,6 +33,11 @@ export const mainConfig: Configuration = {
       },
     ],
   },
+  externals: {
+    "ffmpeg-static": "commonjs ffmpeg-static",
+    "ffprobe-static": "commonjs ffprobe-static",
+    "utp-native": "commonjs utp-native",
+  },
   plugins,
   resolve: {
     extensions: [".js", ".ts", ".jsx", ".tsx", ".css", ".json"],

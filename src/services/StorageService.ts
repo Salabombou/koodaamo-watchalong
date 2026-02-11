@@ -2,6 +2,8 @@ import fs from "fs-extra";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
 
+import logger from "../utilities/logging";
+
 export class StorageService {
   private storagePath: string;
 
@@ -25,11 +27,11 @@ export class StorageService {
 
         if (now - stat.mtimeMs > oneDay) {
           await fs.remove(filePath);
-          console.log(`Cleaned up old file: ${file}`);
+          logger.info(`Cleaned up old file: ${file}`);
         }
       }
     } catch (error) {
-      console.error("Cleanup failed:", error);
+      logger.error("Cleanup failed:", error);
     }
   }
 

@@ -1,5 +1,5 @@
 import { app, BrowserWindow, ipcMain, protocol } from "electron";
-import { updateElectronApp, UpdateSourceType } from "update-electron-app";
+import { autoUpdater } from "electron-updater";
 import logger from "./utilities/logging";
 
 import { StorageService } from "./services/StorageService";
@@ -30,20 +30,6 @@ const mediaService = new MediaService();
 const torrentService = new TorrentService();
 logger.info("Services initialized.");
 
-// Enable auto-updates
-updateElectronApp({
-  updateSource: {
-    type: UpdateSourceType.StaticStorage,
-    baseUrl: `https://github.com/Salabombou/koodaamo-watchalong/releases/download/${app.getVersion()}/koodaamo-watchalong-${app.getVersion()}.Setup.exe`
-  },
-  logger: {
-    info: (msg) => logger.info(msg),
-    warn: (msg) => logger.warn(msg),
-    error: (msg) => logger.error(msg),
-    log: (msg) => logger.info(msg),
-  },
-});
-
 // Global Error Handlers
 process.on("uncaughtException", (error) => {
   logger.error("Uncaught Exception:", error);
@@ -69,6 +55,54 @@ ipcMain.handle("get-node-version", () => {
 if (require("electron-squirrel-startup")) {
   app.quit();
 }
+
+const setupAutoUpdater = () => {
+  autoUpdater.logger = logger;
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on("checking-for-update", () => {
+    logger.info("Checking for update...");
+  });
+
+  autoUpdater.on("update-available", (info) => {
+    logger.info("Update available:", info);
+    BrowserWindow.getAllWindows().forEach((w) =>
+      w.webContents.send("update:available"),
+    );
+  });
+
+  autoUpdater.on("update-not-available", (info) => {
+    logger.info("Update not available:", info);
+  });
+
+  autoUpdater.on("error", (err) => {
+    logger.error("Error in auto-updater:", err);
+    BrowserWindow.getAllWindows().forEach((w) =>
+      w.webContents.send("update:error", err.toString()),
+    );
+  });
+
+  autoUpdater.on("download-progress", (progressObj) => {
+    logger.info(
+      `Download speed: ${progressObj.bytesPerSecond} - ${progressObj.percent}%`,
+    );
+    BrowserWindow.getAllWindows().forEach((w) =>
+      w.webContents.send("update:progress", progressObj),
+    );
+  });
+
+  autoUpdater.on("update-downloaded", (info) => {
+    logger.info("Update downloaded", info);
+    BrowserWindow.getAllWindows().forEach((w) =>
+      w.webContents.send("update:downloaded"),
+    );
+  });
+
+  ipcMain.handle("update:restart", () => {
+    autoUpdater.quitAndInstall();
+  });
+};
 
 const createWindow = () => {
   logger.info("Creating main window...");
@@ -139,10 +173,12 @@ app.on("ready", () => {
   storageService.init().then(() => storageService.cleanup());
 
   createWindow();
+  setupAutoUpdater();
 
   // Check for updates
   try {
     logger.info("Checking for updates...");
+    autoUpdater.checkForUpdatesAndNotify();
   } catch (err) {
     logger.error("Error checking for updates:", err);
   }

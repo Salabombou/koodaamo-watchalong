@@ -90,4 +90,9 @@ typings/
 
 # Electron-Forge
 out/
+
+# Development artifacts
 .tmp/
+
+# Build output
+release

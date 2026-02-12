@@ -34,7 +34,7 @@ logger.info("Services initialized.");
 updateElectronApp({
   updateSource: {
     type: UpdateSourceType.StaticStorage,
-    baseUrl: `https://github.com/Salabombou/koodaamo-watchalong/releases/download/${app.getVersion()}/koodaamo-watchalong-${app.getVersion()}.Setup.exe`
+    baseUrl: `https://github.com/Salabombou/koodaamo-watchalong/releases/download/v${app.getVersion()}/koodaamo-watchalong-${app.getVersion()}.Setup.exe`,
   },
   logger: {
     info: (msg) => logger.info(msg),

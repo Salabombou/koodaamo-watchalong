@@ -1,12 +1,12 @@
 {
   "name": "koodaamo-watchalong",
   "productName": "koodaamo-watchalong",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Salabombou/koodaamo-watchalong.git"
   },
-  "description": "My Electron application description",
+  "description": "An Electron app for synchronizing video playback with friends.",
   "main": ".webpack/main",
   "private": true,
   "scripts": {
@@ -20,7 +20,12 @@
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },
-  "keywords": [],
+  "keywords": [
+    "electron",
+    "watchalong",
+    "video",
+    "sync"
+  ],
   "author": {
     "name": "Salabombou",
     "email": "salabombo@outlook.com"
@@ -32,7 +37,6 @@
       "electron",
       "electron-winstaller",
       "ffmpeg-static",
-      "@roamhq/wrtc",
       "node-datachannel",
       "utf-8-validate",
       "utp-native"
@@ -73,7 +77,6 @@
     "eslint-plugin-react": "^7.37.5",
     "fork-ts-checker-webpack-plugin": "^9.1.0",
     "globals": "^17.3.0",
-    "jiti": "^2.6.1",
     "node-loader": "^2.1.0",
     "postcss": "^8.5.6",
     "postcss-loader": "^8.2.0",
@@ -85,8 +88,7 @@
     "typescript-eslint": "^8.54.0",
     "webpack": "^5.105.0",
     "webpack-cli": "^6.0.1",
-    "webpack-dev-server": "^5.2.3",
-    "word-wrap": "^1.2.5"
+    "webpack-dev-server": "^5.2.3"
   },
   "dependencies": {
     "@fortawesome/fontawesome-free": "^7.1.0",
@@ -98,10 +100,12 @@
     "ffmpeg-static": "^5.3.0",
     "ffprobe-static": "^3.1.0",
     "fs-extra": "^11.3.3",
+    "jiti": "^2.6.1",
     "node-datachannel": "^0.32.1",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-router-dom": "^7.13.0",
+    "update-electron-app": "^3.1.2",
     "uuid": "^13.0.0",
     "video.js": "^8.23.6",
     "webtorrent": "^2.8.5",

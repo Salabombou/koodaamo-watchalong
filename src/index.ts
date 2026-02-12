@@ -1,5 +1,5 @@
 import { app, BrowserWindow, ipcMain, protocol } from "electron";
-import { autoUpdater } from "electron-updater";
+import { updateElectronApp, UpdateSourceType } from "update-electron-app";
 import logger from "./utilities/logging";
 
 import { StorageService } from "./services/StorageService";
@@ -28,25 +28,33 @@ const mediaService = new MediaService();
 const torrentService = new TorrentService();
 logger.info("Services initialized.");
 
-// Update Configuration
-autoUpdater.logger = logger;
-autoUpdater.autoDownload = true;
-
-// Fix for ENOENT: no such file or directory, open '...resources\app-update.yml'
-// Electron Forge does not generate this file, so we configure it programmatically.
-autoUpdater.setFeedURL({
-  provider: "github",
-  owner: "Salabombou",
-  repo: "koodaamo-watchalong",
+// Enable auto-updates
+updateElectronApp({
+  updateSource: {
+    type: UpdateSourceType.ElectronPublicUpdateService,
+    repo: "Salabombou/koodaamo-watchalong",
+  },
+  logger: {
+    info: (msg) => logger.info(msg),
+    warn: (msg) => logger.warn(msg),
+    error: (msg) => logger.error(msg),
+    log: (msg) => logger.info(msg),
+  },
 });
 
 // Global Error Handlers
 process.on("uncaughtException", (error) => {
   logger.error("Uncaught Exception:", error);
+  if (error instanceof Error) {
+    logger.error("Stack Trace:", error.stack);
+  }
 });
 
 process.on("unhandledRejection", (reason) => {
   logger.error("Unhandled Rejection:", reason);
+  if (reason instanceof Error) {
+    logger.error("Stack Trace:", reason.stack);
+  }
 });
 
 ipcMain.handle("get-node-version", () => {
@@ -133,7 +141,6 @@ app.on("ready", () => {
   // Check for updates
   try {
     logger.info("Checking for updates...");
-    autoUpdater.checkForUpdatesAndNotify();
   } catch (err) {
     logger.error("Error checking for updates:", err);
   }
@@ -219,35 +226,6 @@ ipcMain.on("torrent:broadcast", (_, cmd) => {
 
 ipcMain.handle("open-player-window", () => {
   createPlayerWindow();
-});
-
-ipcMain.handle("update:restart", () => {
-  autoUpdater.quitAndInstall();
-});
-
-// AutoUpdater events
-autoUpdater.on("update-available", () => {
-  BrowserWindow.getAllWindows().forEach((w) =>
-    w.webContents.send("update:available"),
-  );
-});
-
-autoUpdater.on("download-progress", (progressObj) => {
-  BrowserWindow.getAllWindows().forEach((w) =>
-    w.webContents.send("update:progress", progressObj),
-  );
-});
-
-autoUpdater.on("update-downloaded", () => {
-  BrowserWindow.getAllWindows().forEach((w) =>
-    w.webContents.send("update:downloaded"),
-  );
-});
-
-autoUpdater.on("error", (err) => {
-  BrowserWindow.getAllWindows().forEach((w) =>
-    w.webContents.send("update:error", err.message || err.toString()),
-  );
 });
 
 // Events

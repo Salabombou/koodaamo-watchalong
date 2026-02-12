@@ -21,7 +21,7 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 
-logger.log("Running app version ", app.getVersion());
+logger.info("Running app version " + app.getVersion());
 
 // Initialize Services
 let storageService: StorageService;
@@ -218,6 +218,9 @@ ipcMain.handle("window:set-always-on-top", (event, enabled) => {
 
 // Storage
 ipcMain.handle("storage:import", async (_, filePath) => {
+  if (!storageService) {
+    throw new Error("Storage service not initialized");
+  }
   return storageService.importFile(filePath);
 });
 
@@ -227,6 +230,9 @@ ipcMain.handle("media:analyze", async (_, filePath) => {
 });
 
 ipcMain.handle("media:normalize", async (event, filePath) => {
+  if (!storageService) {
+    throw new Error("Storage service not initialized");
+  }
   const outputDir = storageService.getStoragePath();
   try {
     const result = await mediaService.normalize(filePath, outputDir, (p) => {

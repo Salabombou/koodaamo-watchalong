@@ -20,8 +20,10 @@ let ffprobePath: string;
 if (app.isPackaged) {
   // In packaged app, binaries are in resources
   const resourcesPath = process.resourcesPath;
-  ffmpegPath = path.join(resourcesPath, "ffmpeg");
-  ffprobePath = path.join(resourcesPath, "ffprobe");
+  const isWindows = process.platform === "win32";
+  const exe = isWindows ? ".exe" : "";
+  ffmpegPath = path.join(resourcesPath, `ffmpeg${exe}`);
+  ffprobePath = path.join(resourcesPath, `ffprobe${exe}`);
 } else {
   const require = createRequire(import.meta.url);
   ffmpegPath = require("ffmpeg-static");

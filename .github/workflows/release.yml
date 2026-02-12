@@ -54,4 +54,4 @@ jobs:
       - name: Publish
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: pnpm run publish
+        run: npm run dist

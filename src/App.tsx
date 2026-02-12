@@ -5,7 +5,6 @@ import About from "./routes/About";
 import CreateWizard from "./routes/CreateWizard";
 import Dashboard from "./routes/Dashboard";
 import Player from "./routes/Player";
-import UpdateNotification from "./components/UpdateNotification";
 
 export default function App() {
   useEffect(() => {
@@ -21,7 +20,6 @@ export default function App() {
   return (
     <HashRouter>
       <div className="font-sans text-base-content min-h-screen bg-base-200">
-        <UpdateNotification />
         <Routes>
           <Route path="/" element={<Home />} />
           <Route path="/about" element={<About />} />

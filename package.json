@@ -1,7 +1,7 @@
 {
   "name": "koodaamo-watchalong",
   "productName": "koodaamo-watchalong",
-  "version": "1.1.8",
+  "version": "1.1.9",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Salabombou/koodaamo-watchalong.git"
@@ -28,12 +28,15 @@
   "build": {
     "appId": "com.salabombou.koodaamo-watchalong",
     "productName": "koodaamo-watchalong",
+    "compression": "maximum",
     "directories": {
       "output": "release"
     },
     "files": [
       "package.json",
-      ".webpack/**/*"
+      ".webpack/**/*",
+      "!node_modules/**/*",
+      "node_modules/utp-native/**/*"
     ],
     "extraResources": [],
     "win": {

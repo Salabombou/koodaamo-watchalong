@@ -32,7 +32,7 @@ const config: ForgeConfig = {
     {
       name: "@reforged/maker-appimage",
       config: {},
-    },
+    }
   ],
   publishers: [
     new PublisherGithub({

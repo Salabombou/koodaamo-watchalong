@@ -1,7 +1,7 @@
 import { EventEmitter } from "events";
 import { Buffer } from "buffer";
 
-export const EXTENSION_NAME = "watchalong_sync";
+export const EXTENSION_NAME = "watchalong_signaling";
 
 export interface Wire extends EventEmitter {
   peerId: string;
@@ -10,13 +10,16 @@ export interface Wire extends EventEmitter {
   [key: string]: unknown;
 }
 
-export interface SyncCommand {
-  type: "play" | "pause" | "seek" | "chat" | "progress";
-  payload: unknown;
-  timestamp: number;
+export interface Signal {
+  type: "offer" | "answer" | "candidate";
+  sdp?: string;
+  candidate?: string;
+  mid?: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any;
 }
 
-export class SyncExtension extends EventEmitter {
+export class SignalingExtension extends EventEmitter {
   protected wire: Wire;
   public name: string = EXTENSION_NAME;
   public isSupported: boolean = false;
@@ -36,31 +39,30 @@ export class SyncExtension extends EventEmitter {
       return;
     }
     this.isSupported = true;
+    this.emit("supported");
   }
 
   onMessage(buf: unknown) {
     try {
-      // Ensure we have a Buffer, as webtorrent/bittorrent-protocol might return Uint8Array or Array
+      // Ensure we have a Buffer
       const buffer = Buffer.isBuffer(buf)
         ? buf
         : Buffer.from(buf as Uint8Array);
       const str = buffer.toString();
-      const command = JSON.parse(str);
-      this.emit("command", command);
+      const signal = JSON.parse(str);
+      this.emit("signal", signal);
     } catch (e: unknown) {
-      console.error("Failed to parse sync command:", e);
+      console.error("Failed to parse signal:", e);
     }
   }
 
-  send(command: SyncCommand) {
+  send(signal: Signal) {
     if (!this.isSupported) return;
     try {
-      const buf = Buffer.from(JSON.stringify(command));
-      // 'this.wire.extended' sends the data.
-      // Warning: If the peer hasn't advertised support, this might fail or do nothing.
+      const buf = Buffer.from(JSON.stringify(signal));
       this.wire.extended(EXTENSION_NAME, buf);
     } catch (e: unknown) {
-      console.error("Failed to send sync command:", e);
+      console.error("Failed to send signal:", e);
     }
   }
 }

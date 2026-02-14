@@ -1,3 +1,5 @@
+declare module "nat-api";
+
 export interface TorrentProgress {
   progress: number;
   downloadSpeed: number;

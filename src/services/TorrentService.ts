@@ -1,29 +1,52 @@
 import WebTorrent from "webtorrent";
-import { SyncExtension, EXTENSION_NAME } from "../protocol/SyncExtension";
-import type { SyncCommand, Wire } from "../protocol/SyncExtension";
+import { upnpNat, type UPnPNAT } from "@achingbrain/nat-port-mapper";
+import {
+  SignalingExtension,
+  EXTENSION_NAME,
+  type Signal,
+  type Wire,
+} from "../protocol/SignalingExtension";
 import { EventEmitter } from "events";
 import rangeParser from "range-parser";
 import http from "http";
 import type { AddressInfo } from "net";
-import nodeDatachannelPolyfill from "node-datachannel/polyfill";
 import logger from "../utilities/logging";
+import { SyncService, type SyncCommand } from "./SyncService";
 
 const DEFAULT_TRACKERS = [
-  "wss://tracker.openwebtorrent.com",
-  "wss://tracker.btorrent.xyz",
   "wss://tracker.files.fm:7073/announce",
-  "wss://tracker.webtorrent.dev",
-  "wss://tracker.sloppyta.co:443/announce",
-  "wss://open.webtorrent.io",
+  "ws://tracker.files.fm:7072/announce",
+  "http://tracker.opentrackr.org:1337/announce",
+  "udp://open.demonii.com:1337/announce",
+  "udp://open.stealth.si:80/announce",
+  "udp://exodus.desync.com:6969/announce",
+  "udp://zer0day.ch:1337/announce",
+  "udp://wepzone.net:6969/announce",
+  "udp://tracker.torrent.eu.org:451/announce",
+  "udp://tracker.theoks.net:6969/announce",
+  "udp://tracker.qu.ax:6969/announce",
+  "udp://tracker.filemail.com:6969/announce",
+  "udp://tracker.dler.org:6969/announce",
+  "udp://tracker.bittor.pw:1337/announce",
+  "udp://tracker.alaskantf.com:6969/announce",
+  "udp://tracker-udp.gbitt.info:80/announce",
+  "udp://t.overflow.biz:6969/announce",
+  "udp://open.dstud.io:6969/announce",
+  "udp://leet-tracker.moe:1337/announce",
+  "udp://6ahddutb1ucc3cp.ru:6969/announce",
+  "https://tracker.zhuqiy.com:443/announce",
+  "https://tracker.pmman.tech:443/announce",
 ];
 
 export class TorrentService extends EventEmitter {
   client: WebTorrent.Instance | undefined;
+  natClient: UPnPNAT | undefined;
   clientReady: Promise<WebTorrent.Instance>;
+  syncService: SyncService; // Add SyncService
 
   activeTorrent: WebTorrent.Torrent | null = null;
   isHost: boolean = false;
-  private extensions: Set<SyncExtension> = new Set();
+  private extensions: Set<SignalingExtension> = new Set();
   private peerProgress: Map<string, number> = new Map();
   private lastEmit: number = 0;
   private lastConsoleLog: number = 0;
@@ -31,13 +54,25 @@ export class TorrentService extends EventEmitter {
   private server: http.Server | null = null;
   private streamPort: number = 0;
 
-  constructor() {
+  constructor(syncService: SyncService) {
     super();
+    this.syncService = syncService; // Assign
     this.clientReady = this.initClient();
     this.clientReady.catch((err) => {
       logger.error("Failed to initialize WebTorrent client:", err);
     });
     this.startServer();
+
+    // Listen for commands from P2P service
+    this.syncService.on("command", (cmd, peerId) => {
+      if (cmd.type === "progress") {
+        const payload = cmd.payload as { percent: number };
+        this.peerProgress.set(peerId, payload.percent);
+        this.emitProgress();
+      } else {
+        this.emit("sync-command", cmd);
+      }
+    });
   }
 
   private startServer() {
@@ -145,20 +180,7 @@ export class TorrentService extends EventEmitter {
     logger.info(
       `Using webtorrent (${WebTorrent.WEBRTC_SUPPORT ? "WebRTC" : "TCP/UDP"})`,
     );
-    this.client = new WebTorrent({
-      utp: true,
-      dht: true,
-      // @ts-expect-error -- types are wrong, but it does work
-      wrtc: nodeDatachannelPolyfill,
-      tracker: {
-        config: {
-          iceServers: [
-            { urls: "stun:stun.l.google.com:19302" },
-            { urls: "stun:global.stun.twilio.com:3478" },
-          ],
-        },
-      },
-    });
+    this.client = new WebTorrent();
     this.client!.setMaxListeners(20);
 
     this.client!.on("error", (err: unknown) => {
@@ -169,6 +191,8 @@ export class TorrentService extends EventEmitter {
     this.client.on("torrent", (torrent: WebTorrent.Torrent) => {
       logger.info(`Torrent added: ${torrent.infoHash}`);
     });
+
+    this.natClient = upnpNat();
 
     return this.client!;
   }
@@ -186,7 +210,7 @@ export class TorrentService extends EventEmitter {
 
       const t = client.seed(
         filePath,
-        { announce: trackers },
+        { announce: trackers, announceList: trackers.map((t) => [t]) },
         (torrent: WebTorrent.Torrent) => {
           logger.info(
             `Torrent creation complete! Took ${(Date.now() - startTime) / 1000}s`,
@@ -249,19 +273,25 @@ export class TorrentService extends EventEmitter {
     // Register Extension using a class wrapper to satisfy bittorrent-protocol
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const self = this;
-    class EXT extends SyncExtension {
+    class EXT extends SignalingExtension {
       constructor(wire: Wire) {
         super(wire);
         self.extensions.add(this);
-        this.on("command", (cmd: SyncCommand) => {
-          if (cmd.type === "progress") {
-            const payload = cmd.payload as { percent: number };
-            self.peerProgress.set(wire.peerId, payload.percent);
-            self.emitProgress();
-          } else {
-            self.emit("sync-command", cmd);
-          }
+
+        this.on("signal", (signal: Signal) => {
+          self.syncService.handleSignal(wire.peerId, signal);
         });
+
+        this.on("supported", () => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const myId = (self.client as any).peerId || "";
+          const isInitiator = myId > wire.peerId;
+
+          self.syncService.addPeer(wire.peerId, isInitiator, (sig) => {
+            this.send(sig);
+          });
+        });
+
         wire.on("close", () => {
           self.extensions.delete(this);
           self.peerProgress.delete(wire.peerId);
@@ -459,13 +489,7 @@ export class TorrentService extends EventEmitter {
   }
 
   broadcast(command: SyncCommand) {
-    if (this.extensions.size === 0) {
-      logger.warn("No peers to broadcast to");
-    }
-    logger.info(
-      `Broadcasting ${command.type} to ${this.extensions.size} peers`,
-    );
-    this.extensions.forEach((ext) => ext.send(command));
+    this.syncService.broadcast(command);
   }
 
   /*cleanup() {

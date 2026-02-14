@@ -1,7 +1,7 @@
 {
   "name": "koodaamo-watchalong",
   "productName": "koodaamo-watchalong",
-  "version": "1.1.9",
+  "version": "1.1.12",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Salabombou/koodaamo-watchalong.git"
@@ -106,7 +106,6 @@
   "license": "MIT",
   "pnpm": {
     "onlyBuiltDependencies": [
-      "@bitdisaster/exe-icon-extractor",
       "bufferutil",
       "electron",
       "electron-winstaller",
@@ -130,16 +129,16 @@
     "@electron/fuses": "^1.8.0",
     "@eslint/css": "^0.14.1",
     "@eslint/js": "^9.39.2",
-    "@eslint/json": "^1.0.0",
+    "@eslint/json": "^1.0.1",
     "@eslint/markdown": "^7.5.1",
     "@reforged/maker-appimage": "^5.2.0",
     "@tailwindcss/postcss": "^4.1.18",
     "@types/electron-squirrel-startup": "^1.0.2",
     "@types/ffprobe-static": "^2.0.3",
     "@types/fs-extra": "^11.0.4",
-    "@types/node": "^25.2.2",
+    "@types/node": "^25.2.3",
     "@types/range-parser": "^1.2.7",
-    "@types/react": "^19.2.10",
+    "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@types/webtorrent": "^0.110.1",
     "@vercel/webpack-asset-relocator-loader": "^1.10.0",
@@ -166,14 +165,15 @@
     "ts-loader": "^9.5.4",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.54.0",
+    "typescript-eslint": "^8.55.0",
     "wait-on": "^9.0.4",
-    "webpack": "^5.105.0",
+    "webpack": "^5.105.2",
     "webpack-cli": "^6.0.1",
     "webpack-dev-server": "^5.2.3"
   },
   "dependencies": {
-    "@fortawesome/fontawesome-free": "^7.1.0",
+    "@achingbrain/nat-port-mapper": "^4.0.5",
+    "@fortawesome/fontawesome-free": "^7.2.0",
     "@types/video.js": "^7.3.58",
     "axios": "^1.13.5",
     "electron-is-dev": "^3.0.1",
@@ -188,7 +188,7 @@
     "react-dom": "^19.2.4",
     "react-router-dom": "^7.13.0",
     "uuid": "^13.0.0",
-    "video.js": "^8.23.6",
+    "video.js": "^8.23.7",
     "webtorrent": "^2.8.5",
     "winston": "^3.19.0"
   }

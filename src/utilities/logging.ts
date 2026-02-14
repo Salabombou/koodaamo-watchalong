@@ -2,16 +2,18 @@ import winston from "winston";
 import isDev from "electron-is-dev";
 import os from "os";
 
+const appName = isDev ? "koodaamo-watchalong-dev" : "koodaamo-watchalong";
+
 let logFilePath: string;
 switch (os.platform()) {
   case "win32":
-    logFilePath = `${os.homedir()}\\AppData\\Roaming\\koodaamo-watchalong\\logs\\app.log`;
+    logFilePath = `${os.homedir()}\\AppData\\Roaming\\${appName}\\logs\\app.log`;
     break;
   case "darwin":
-    logFilePath = `${os.homedir()}/Library/Logs/koodaamo-watchalong/app.log`;
+    logFilePath = `${os.homedir()}/Library/Logs/${appName}/app.log`;
     break;
   case "linux":
-    logFilePath = `${os.homedir()}/.koodaamo-watchalong/logs/app.log`;
+    logFilePath = `${os.homedir()}/.${appName}/logs/app.log`;
     break;
   default:
     throw new Error(`Unsupported platform: ${os.platform()}`);

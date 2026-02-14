@@ -2,9 +2,21 @@ import { app, BrowserWindow, ipcMain, protocol } from "electron";
 import { autoUpdater } from "electron-updater";
 import logger from "./utilities/logging";
 
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const isDev = require("electron-is-dev");
+
+if (isDev) {
+  const userDataPath = app.getPath("userData");
+  app.setPath("userData", userDataPath + "-dev");
+  logger.info(
+    `Running in dev mode. Redirected userData to: ${app.getPath("userData")}`,
+  );
+}
+
 import { StorageService } from "./services/StorageService";
 import { MediaService } from "./services/MediaService";
 import { TorrentService } from "./services/TorrentService";
+import { SyncService } from "./services/SyncService";
 
 declare const MAIN_WINDOW_WEBPACK_ENTRY: string;
 declare const MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY: string;
@@ -27,7 +39,8 @@ logger.info("Running app version " + app.getVersion());
 let storageService: StorageService;
 logger.info("Initializing services...");
 const mediaService = new MediaService();
-const torrentService = new TorrentService();
+const syncService = new SyncService();
+const torrentService = new TorrentService(syncService);
 logger.info("Services initialized.");
 
 // Global Error Handlers

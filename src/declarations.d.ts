@@ -24,7 +24,7 @@ export interface ElectronAPI {
   analyzeMedia: (filePath: string) => Promise<any>;
   normalizeMedia: (filePath: string) => Promise<string>;
   onMediaProgress: (callback: (percent: number) => void) => () => void;
-  seedTorrent: (filePath: string, trackers: string[]) => Promise<string>;
+  seedTorrent: (filePath: string) => Promise<string>;
   addTorrent: (magnet: string) => Promise<any>;
   checkIsHost: () => Promise<boolean>;
   getStreamUrl: () => Promise<string>;

@@ -248,8 +248,8 @@ ipcMain.handle("media:normalize", async (event, filePath) => {
 });
 
 // Torrent
-ipcMain.handle("torrent:seed", (_, filePath, trackers) => {
-  return torrentService.seed(filePath, trackers);
+ipcMain.handle("torrent:seed", (_, filePath) => {
+  return torrentService.seed(filePath);
 });
 
 ipcMain.handle("torrent:add", (_, magnet) => {

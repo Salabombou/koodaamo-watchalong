@@ -1,25 +1,18 @@
 import WebTorrent from "webtorrent";
+import { TrackerService } from "./TrackerService";
 import { SyncExtension, EXTENSION_NAME } from "../protocol/SyncExtension";
 import type { SyncCommand, Wire } from "../protocol/SyncExtension";
 import { EventEmitter } from "events";
 import rangeParser from "range-parser";
 import http from "http";
 import type { AddressInfo } from "net";
-import nodeDatachannelPolyfill from "node-datachannel/polyfill";
 import logger from "../utilities/logging";
-
-const DEFAULT_TRACKERS = [
-  "wss://tracker.openwebtorrent.com",
-  "wss://tracker.btorrent.xyz",
-  "wss://tracker.files.fm:7073/announce",
-  "wss://tracker.webtorrent.dev",
-  "wss://tracker.sloppyta.co:443/announce",
-  "wss://open.webtorrent.io",
-];
 
 export class TorrentService extends EventEmitter {
   client: WebTorrent.Instance | undefined;
   clientReady: Promise<WebTorrent.Instance>;
+
+  private trackerService = new TrackerService();
 
   activeTorrent: WebTorrent.Torrent | null = null;
   isHost: boolean = false;
@@ -148,16 +141,7 @@ export class TorrentService extends EventEmitter {
     this.client = new WebTorrent({
       utp: true,
       dht: true,
-      // @ts-expect-error -- types are wrong, but it does work
-      wrtc: nodeDatachannelPolyfill,
-      tracker: {
-        config: {
-          iceServers: [
-            { urls: "stun:stun.l.google.com:19302" },
-            { urls: "stun:global.stun.twilio.com:3478" },
-          ],
-        },
-      },
+      tracker: true,
     });
     this.client!.setMaxListeners(20);
 
@@ -173,20 +157,26 @@ export class TorrentService extends EventEmitter {
     return this.client!;
   }
 
-  async seed(filePath: string, userTrackers: string[] = []): Promise<string> {
+  async seed(filePath: string): Promise<string> {
     const client = await this.clientReady;
     logger.info(`Starting seed for file: ${filePath}`);
     const startTime = Date.now();
 
+    // Start local tracker
+    let localTrackerUrl = "";
+    try {
+      this.trackerService.stop();
+      localTrackerUrl = await this.trackerService.start();
+    } catch (err) {
+      logger.error("Failed to start tracker service", err);
+    }
+
     return new Promise((resolve) => {
       //if (this.activeTorrent) this.cleanup();
 
-      const trackers = [...DEFAULT_TRACKERS, ...userTrackers];
-      logger.info(`Trackers: ${trackers.join(", ")}`);
-
       const t = client.seed(
         filePath,
-        { announce: trackers },
+        { announce: [localTrackerUrl] },
         (torrent: WebTorrent.Torrent) => {
           logger.info(
             `Torrent creation complete! Took ${(Date.now() - startTime) / 1000}s`,

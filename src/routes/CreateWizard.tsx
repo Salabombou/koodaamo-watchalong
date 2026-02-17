@@ -100,7 +100,7 @@ export default function CreateWizard() {
     setCreating(true);
     try {
       const importedPath = await window.electronAPI.importFile(filePath);
-      const magnet = await window.electronAPI.seedTorrent(importedPath, []);
+      const magnet = await window.electronAPI.seedTorrent(importedPath);
       navigate(`/dashboard?magnet=${encodeURIComponent(magnet)}&host=true`);
     } catch (e) {
       console.error(e);

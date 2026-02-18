@@ -23,8 +23,12 @@ export interface ElectronAPI {
   importFile: (filePath: string) => Promise<string>;
   analyzeMedia: (filePath: string) => Promise<any>;
   normalizeMedia: (filePath: string) => Promise<string>;
+  segmentMedia: (filePath: string, reEncode: boolean) => Promise<string>;
   onMediaProgress: (callback: (percent: number) => void) => () => void;
-  seedTorrent: (filePath: string) => Promise<string>;
+  seedTorrent: (
+    filePath: string,
+    trackerType: "lan" | "localtunnel" | "untun",
+  ) => Promise<string>;
   addTorrent: (magnet: string) => Promise<any>;
   checkIsHost: () => Promise<boolean>;
   getStreamUrl: () => Promise<string>;

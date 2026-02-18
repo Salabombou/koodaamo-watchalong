@@ -1,15 +1,17 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { Server } from "bittorrent-tracker";
 import localtunnel from "localtunnel";
 import logger from "../utilities/logging";
+import { startTunnel } from "untun";
+import { networkInterfaces } from "os";
 
 export class TrackerService {
-  private server: any | null = null;
+  private server: Server | null = null;
   private tunnel: localtunnel.Tunnel | null = null;
+  private untunTunnel: Awaited<ReturnType<typeof startTunnel>> | null = null;
   private port: number = 0;
   private tunnelUrl: string | null = null;
 
-  async start(): Promise<string> {
+  async start(type: "lan" | "localtunnel" | "untun" = "localtunnel"): Promise<string> {
     return new Promise((resolve, reject) => {
       try {
         // 1. Start the Bittorrent Tracker Server
@@ -20,23 +22,60 @@ export class TrackerService {
           stats: true,
           // Interval for client announcements (polling frequency)
           interval: 30000,
-          filter: (
-            infoHash: string,
-            params: any,
-            cb: (err: Error | null) => void,
-          ) => {
+          filter: (infoHash: string, params: unknown, cb: (err: Error | null) => void) => {
             // Allow tracking for any torrent
             cb(null);
           },
         });
 
-        // Listen on a random local port
-        this.server.listen(0, "localhost", async () => {
-          this.port = (this.server.http.address() as any).port;
+        // Listen on all interfaces
+        this.server.listen(0, "0.0.0.0", async () => {
+          const address = this.server?.http.address();
+          if (address && typeof address === "object") {
+            this.port = address.port;
+          } else {
+            // Fallback or error if server not started correctly
+            this.port = 0; 
+          }
           logger.info(`Tracker running locally on port ${this.port}`);
 
           try {
-            // 2. Start LocalTunnel to expose the tracker
+            if (type === "lan") {
+              const nets = networkInterfaces();
+              let ip = "127.0.0.1";
+              for (const name of Object.keys(nets)) {
+                for (const net of nets[name] || []) {
+                  // Skip internal and non-IPv4 addresses
+                  if (net.family === "IPv4" && !net.internal) {
+                    ip = net.address;
+                    // Prefer first non-internal IPv4
+                    break;
+                  }
+                }
+                if (ip !== "127.0.0.1") break;
+              }
+              this.tunnelUrl = `http://${ip}:${this.port}`;
+              logger.info(`Tracker accessible on LAN at: ${this.tunnelUrl}`);
+              resolve(this.getAnnounceUrl());
+              return;
+            } else if (type === "untun") {
+              // Try Cloudflare Quick Tunnel (untun)
+              this.untunTunnel = await startTunnel({
+                port: this.port,
+                acceptCloudflareNotice: true,
+              });
+              if (!this.untunTunnel) {
+                throw new Error("Failed to start Cloudflare Tunnel");
+              }
+              this.tunnelUrl = await this.untunTunnel.getURL();
+              logger.info(
+                `Cloudflare Tunnel established at: ${this.tunnelUrl}`,
+              );
+              resolve(this.getAnnounceUrl());
+              return;
+            }
+
+            // Default: LocalTunnel
             // Note: Some public localtunnel servers show interstitial pages.
             // If encountered, consider using a custom server or passing headers if client allows.
             this.tunnel = await localtunnel({ port: this.port });
@@ -57,12 +96,12 @@ export class TrackerService {
             // Return the websocket URL version
             resolve(this.getAnnounceUrl());
           } catch (err) {
-            logger.error("Failed to create localtunnel:", err);
+            logger.error("Failed to set up tracker access:", err);
             reject(err);
           }
         });
 
-        this.server.on("error", (err: any) => {
+        this.server.on("error", (err: unknown) => {
           logger.error("Tracker server error:", err);
           reject(err);
         });
@@ -83,6 +122,10 @@ export class TrackerService {
   }
 
   stop() {
+    if (this.untunTunnel) {
+      this.untunTunnel.close();
+      this.untunTunnel = null;
+    }
     if (this.tunnel) {
       this.tunnel.close();
       this.tunnel = null;

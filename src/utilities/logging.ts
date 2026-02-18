@@ -1,6 +1,6 @@
-import winston from "winston";
+import * as winston from "winston";
 import isDev from "electron-is-dev";
-import os from "os";
+import * as os from "os";
 
 let logFilePath: string;
 switch (os.platform()) {

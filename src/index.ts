@@ -1,6 +1,8 @@
 import { app, BrowserWindow, ipcMain, protocol } from "electron";
 import { autoUpdater } from "electron-updater";
 import logger from "./utilities/logging";
+import path from "path";
+import crypto from "crypto";
 
 import { StorageService } from "./services/StorageService";
 import { MediaService } from "./services/MediaService";
@@ -247,10 +249,44 @@ ipcMain.handle("media:normalize", async (event, filePath) => {
   }
 });
 
+ipcMain.handle(
+  "media:segment",
+  async (event, filePath, reEncode: boolean = true) => {
+    if (!storageService) {
+      throw new Error("Storage service not initialized");
+    }
+
+    // Create a unique GUID folder inside the storage path
+    const uniqueId = crypto.randomUUID();
+    const outputDir = path.join(storageService.getStoragePath(), uniqueId);
+
+    const progressCallback = (p: number) => {
+      event.sender.send("media:progress", p);
+    };
+
+    try {
+      logger.info(`Starting segmentation for ${filePath} into ${outputDir}`);
+      const m3u8Path = await mediaService.segmentMedia(
+        filePath,
+        outputDir,
+        reEncode,
+        progressCallback,
+      );
+      return m3u8Path;
+    } catch (e: unknown) {
+      logger.error("Segmentation failed", e);
+      throw e;
+    }
+  },
+);
+
 // Torrent
-ipcMain.handle("torrent:seed", (_, filePath) => {
-  return torrentService.seed(filePath);
-});
+ipcMain.handle(
+  "torrent:seed",
+  (_, filePath, trackerType: "lan" | "localtunnel" | "untun") => {
+    return torrentService.seed(filePath, trackerType);
+  },
+);
 
 ipcMain.handle("torrent:add", (_, magnet) => {
   return torrentService.add(magnet);

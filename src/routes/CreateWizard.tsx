@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 const STEPS = [
   { title: "Select File", description: "Choose video file" },
   { title: "Analysis", description: "Check codecs" },
+  { title: "Preparing", description: "Create HLS stream" },
   { title: "Launch", description: "Start room" },
 ];
 
@@ -22,15 +23,21 @@ export default function CreateWizard() {
   const [maxStep, setMaxStep] = useState(0);
   const [filePath, setFilePath] = useState<string>("");
   const [analysis, setAnalysis] = useState<MediaAnalysis | null>(null);
-  const [normalizing, setNormalizing] = useState(false);
+  const [segmenting, setSegmenting] = useState(false);
+  const [segmentedPath, setSegmentedPath] = useState<string>("");
+  const [reEncode, setReEncode] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [creating, setCreating] = useState(false);
+  const [trackerType, setTrackerType] = useState<
+    "lan" | "localtunnel" | "untun"
+  >("localtunnel");
   const navigate = useNavigate();
 
   const canContinue = () => {
     if (step === 0) return !!filePath;
     if (step === 1) return analysis && !analyzing;
+    if (step === 2) return !!segmentedPath && !segmenting;
     return true;
   };
 
@@ -71,9 +78,9 @@ export default function CreateWizard() {
     }
   };
 
-  const handleNormalize = async () => {
+  const handleSegmentation = async () => {
     if (!filePath) return;
-    setNormalizing(true);
+    setSegmenting(true);
     setProgress(0);
 
     const cleanup = window.electronAPI.onMediaProgress((p) => {
@@ -81,26 +88,53 @@ export default function CreateWizard() {
     });
 
     try {
-      const newPath = await window.electronAPI.normalizeMedia(filePath);
-      setFilePath(newPath);
-      setAnalysis((prev) =>
-        prev ? { ...prev, needsNormalization: false } : null,
+      const resultPath = await window.electronAPI.segmentMedia(
+        filePath,
+        reEncode,
       );
+      setSegmentedPath(resultPath);
+      nextStep(); // Auto advance to launch step
+      setMaxStep(3);
     } catch (e) {
       console.error(e);
-      alert("Normalization failed");
+      alert("Segmentation failed");
     } finally {
       cleanup();
-      setNormalizing(false);
+      setSegmenting(false);
     }
   };
 
   const handleCreate = async () => {
-    if (!filePath) return;
+    if (!segmentedPath) return;
     setCreating(true);
     try {
-      const importedPath = await window.electronAPI.importFile(filePath);
-      const magnet = await window.electronAPI.seedTorrent(importedPath);
+      // For HLS, we seed the folder containing the m3u8 and ts files.
+      // The segmentedPath points to the .m3u8 file.
+      // We rely on the backend to handle the seeding of the folder if we pass the m3u8 path, or we pass the folder.
+      // However, `webtorrent` usually takes a folder path to seed a folder.
+      // Let's assume on the backend, if `segmentMedia` was used, the path is already in the right place.
+      // BUT `seedTorrent` in `TorrentService` just calls `client.seed(filePath)`.
+      // If we pass `.../video.m3u8`, it seeds just that file.
+      // We need to pass the directory.
+      // Since we can't do path manipulation easily here, the `segmentMedia` returns the playlist path.
+      // Let's modify `TorrentService` to handle this or modify `handleSegmentation` return value?
+      // Actually, if we pass a directory to `client.seed`, it seeds the directory.
+      // I'll update `seedTorrent` in the backend to check if it's an .m3u8 file inside a folder and seed the folder?
+      // Or easier: I'll hack it here by not changing backend too much if I can avoid it.
+      // But verify: `window.electronAPI.seedTorrent` takes a string.
+
+      // Let's modify `seedTorrent` in `TorrentService` to detect if the path is an m3u8 and seed its parent dir?
+      // No, that's implicit magic.
+      // Better: Update `MediaService` to return the FOLDER path?
+      // Or update `CreateWizard` to ask backend to seed the folder.
+      // I'll assume for now `segmentedPath` is the m3u8 file.
+      // I need to change `TorrentService.seed` to handle this case:
+      // if path ends in .m3u8, seed path.dirname(path).
+
+      const magnet = await window.electronAPI.seedTorrent(
+        segmentedPath,
+        trackerType,
+      );
       navigate(`/dashboard?magnet=${encodeURIComponent(magnet)}&host=true`);
     } catch (e) {
       console.error(e);
@@ -215,29 +249,9 @@ export default function CreateWizard() {
                         <div>
                           <h3 className="font-bold">Conversion Required</h3>
                           <div className="text-xs">
-                            This video format might not play in all browsers.
+                            Format requires processing. Click Continue to
+                            proceed to segmentation.
                           </div>
-                        </div>
-                        <div className="flex-none">
-                          {normalizing ? (
-                            <div className="flex flex-col gap-1 w-32">
-                              <span className="text-xs font-bold text-center">
-                                {Math.round(progress)}%
-                              </span>
-                              <progress
-                                className="progress progress-neutral w-full"
-                                value={progress}
-                                max="100"
-                              ></progress>
-                            </div>
-                          ) : (
-                            <button
-                              onClick={handleNormalize}
-                              className="btn btn-sm btn-neutral"
-                            >
-                              FIX NOW
-                            </button>
-                          )}
                         </div>
                       </div>
                     ) : (
@@ -256,7 +270,7 @@ export default function CreateWizard() {
                           />
                         </svg>
                         <span className="font-bold">
-                          File is ready for streaming!
+                          Analysis Complete. Ready for HLS Segmentation.
                         </span>
                       </div>
                     )}
@@ -264,9 +278,80 @@ export default function CreateWizard() {
                 ) : null}
               </div>
             )}
-
-            {/* Step 3: Launch */}
+            {/* Step 2: Segmentation */}
             {step === 2 && (
+              <div className="w-full">
+                <h2 className="text-3xl font-black mb-6 uppercase border-b-4 border-base-content/10 inline-block pb-2">
+                  Create Stream
+                </h2>
+                <div className="space-y-6">
+                  <div className="form-control">
+                    <label className="label cursor-pointer justify-start gap-4">
+                      <span className="label-text text-lg font-bold">
+                        Re-encode Video (Recommended)
+                      </span>
+                      <input
+                        type="checkbox"
+                        className="toggle toggle-primary"
+                        checked={reEncode}
+                        onChange={(e) => setReEncode(e.target.checked)}
+                        disabled={segmenting || !!segmentedPath}
+                      />
+                    </label>
+                    <div className="text-xs opacity-70 ml-2">
+                      Disable this only if you know the video is already H.264
+                      compatible. Re-encoding ensures compatibility but takes
+                      longer.
+                    </div>
+                  </div>
+
+                  {segmenting ? (
+                    <div className="flex flex-col gap-2 w-full">
+                      <div className="flex justify-between font-bold">
+                        <span>PROCESSING...</span>
+                        <span>{Math.round(progress)}%</span>
+                      </div>
+                      <progress
+                        className="progress progress-primary w-full h-4"
+                        value={progress}
+                        max="100"
+                      ></progress>
+                    </div>
+                  ) : segmentedPath ? (
+                    <div className="alert alert-success shadow-lg">
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        className="stroke-current shrink-0 h-6 w-6"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth="2"
+                          d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+                        />
+                      </svg>
+                      <div>
+                        <h3 className="font-bold">Stream Ready!</h3>
+                        <div className="text-xs">
+                          Files are segmented and playlist created.
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={handleSegmentation}
+                      className="btn btn-primary btn-lg w-full"
+                    >
+                      START SEGMENTATION
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+            {/* Step 3: Launch */}
+            {step === 3 && (
               <div className="h-full flex flex-col justify-center items-center text-center">
                 <h2 className="text-4xl font-black mb-4 text-primary">
                   READY TO LAUNCH?
@@ -278,11 +363,69 @@ export default function CreateWizard() {
 
                 <div className="card w-full max-w-md bg-base-200 shadow-inner">
                   <div className="card-body p-6 text-left font-mono text-sm">
-                    <div className="mb-2">
-                      <span className="font-bold text-base-content/60">
+                    <div className="mb-4">
+                      <span className="font-bold text-base-content/60 block mb-1">
                         FILE:
-                      </span>{" "}
-                      {filePath.split(/[/\\]/).pop()}
+                      </span>
+                      <span className="break-all">
+                        {filePath.split(/[/\\]/).pop()}
+                      </span>
+                    </div>
+
+                    <div className="divider my-2"></div>
+
+                    <div className="form-control">
+                      <span className="font-bold text-base-content/60 block mb-2">
+                        CONNECTION TYPE:
+                      </span>
+
+                      <label className="label cursor-pointer justify-start gap-3 p-2 hover:bg-base-100 rounded-lg transition-colors">
+                        <input
+                          type="radio"
+                          name="tracker"
+                          className="radio radio-sm radio-primary"
+                          checked={trackerType === "lan"}
+                          onChange={() => setTrackerType("lan")}
+                        />
+                        <div className="flex flex-col">
+                          <span className="font-bold">Local Network</span>
+                          <span className="text-xs opacity-60">
+                            LAN only (Fastest)
+                          </span>
+                        </div>
+                      </label>
+
+                      <label className="label cursor-pointer justify-start gap-3 p-2 hover:bg-base-100 rounded-lg transition-colors">
+                        <input
+                          type="radio"
+                          name="tracker"
+                          className="radio radio-sm radio-primary"
+                          checked={trackerType === "localtunnel"}
+                          onChange={() => setTrackerType("localtunnel")}
+                        />
+                        <div className="flex flex-col">
+                          <span className="font-bold">Localtunnel</span>
+                          <span className="text-xs opacity-60">
+                            Public Internet (Default)
+                          </span>
+                        </div>
+                      </label>
+
+                      <label className="label cursor-pointer justify-start gap-3 p-2 hover:bg-base-100 rounded-lg transition-colors">
+                        <input
+                          type="radio"
+                          name="tracker"
+                          className="radio radio-sm radio-primary"
+                          checked={trackerType === "untun"}
+                          onChange={() => setTrackerType("untun")}
+                        />
+                        <div className="flex flex-col">
+                          <span className="font-bold">Cloudflare Tunnel</span>
+                          <span className="text-xs opacity-60">
+                            Public Internet (Alternative)
+                          </span>
+                        </div>
+                      </label>
                     </div>
                   </div>
                 </div>
@@ -301,7 +444,7 @@ export default function CreateWizard() {
             BACK
           </button>
 
-          {step === 2 ? (
+          {step === 3 ? (
             <button
               onClick={handleCreate}
               disabled={creating}

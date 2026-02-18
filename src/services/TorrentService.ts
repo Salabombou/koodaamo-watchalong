@@ -5,6 +5,7 @@ import type { SyncCommand, Wire } from "../protocol/SyncExtension";
 import { EventEmitter } from "events";
 import rangeParser from "range-parser";
 import http from "http";
+import path from "path";
 import type { AddressInfo } from "net";
 import logger from "../utilities/logging";
 
@@ -62,50 +63,84 @@ export class TorrentService extends EventEmitter {
     req: http.IncomingMessage,
     res: http.ServerResponse,
   ) {
-    if (!this.activeTorrent) {
-      res.statusCode = 404;
-      res.end("No active torrent");
-      return;
-    }
-
     if (!this.activeTorrent || !this.activeTorrent.ready) {
       res.statusCode = 503;
       res.end("Torrent not ready");
       return;
     }
 
-    // Find the video file
-    const file = this.activeTorrent.files.find(
-      (f: WebTorrent.TorrentFile) =>
-        f.name.endsWith(".mp4") ||
-        f.name.endsWith(".webm") ||
-        f.name.endsWith(".mkv") ||
-        f.name.endsWith(".avi"),
-    );
+    const url = req.url || "/";
+    const cleanPath = decodeURIComponent(url.split("?")[0]);
+
+    // Find file based on request path
+    let file: WebTorrent.TorrentFile | undefined;
+
+    if (cleanPath === "/" || cleanPath === "") {
+      // Default: prioritize m3u8, then video
+      file = this.activeTorrent.files.find((f) => f.name.endsWith(".m3u8"));
+      if (!file) {
+        file = this.activeTorrent.files.find((f) =>
+          /\.(mp4|webm|mkv|avi)$/i.test(f.name),
+        );
+      }
+    } else {
+      // Logic to match requested file.
+      // If we are seeding a folder "uuid/video.m3u8", the torrent structure is:
+      // - uuid/video.m3u8
+      // - uuid/segment.ts
+      // The request might be "/video.m3u8" or "/segment.ts" if the player treats root as base.
+
+      const searchName = cleanPath.startsWith("/")
+        ? cleanPath.slice(1)
+        : cleanPath;
+
+      file = this.activeTorrent.files.find((f) => {
+        // If the torrent is a single file, f.path is just the name.
+        // If it's a folder, f.path is "Folder/file.name".
+        // We should match loosely against the end of the path to be safe,
+        // or ideally exact match if the client handles paths correctly.
+        return f.name === searchName || f.path.endsWith(searchName);
+      });
+    }
 
     if (!file) {
       res.statusCode = 404;
-      res.end("No video file found");
+      res.end("File not found");
       return;
     }
 
-    file.select(); // Prioritize this file for downloading/streaming
+    file.select();
 
+    // Determine Content-Type
+    let contentType = "application/octet-stream";
+    if (file.name.endsWith(".m3u8"))
+      contentType = "application/vnd.apple.mpegurl";
+    else if (file.name.endsWith(".ts")) contentType = "video/mp2t";
+    else if (file.name.endsWith(".mp4")) contentType = "video/mp4";
+    else if (file.name.endsWith(".webm")) contentType = "video/webm";
+    else if (file.name.endsWith(".vtt")) contentType = "text/vtt";
+
+    // Handle Range Requests (important for seeking in MP4, less so for TS but good to have)
     const rangeHeader = req.headers.range;
 
     if (!rangeHeader) {
       res.setHeader("Content-Length", file.length);
-      res.setHeader("Content-Type", "video/mp4");
+      res.setHeader("Content-Type", contentType);
       res.setHeader("Accept-Ranges", "bytes");
 
       const stream = file.createReadStream();
       stream.pipe(res);
+      stream.on("error", (err) => {
+        logger.error("Stream error", err);
+        if (!res.headersSent) res.end();
+      });
       return;
     }
 
     const parts = rangeParser(file.length, rangeHeader);
 
-    if (parts === -1 || parts === -2) {
+    // range-parser can return -1 (unsatisfiable), -2 (malformed), or an array of ranges
+    if (parts === -1 || parts === -2 || !Array.isArray(parts)) {
       res.statusCode = 416;
       res.setHeader("Content-Range", `bytes */${file.length}`);
       res.end();
@@ -119,7 +154,7 @@ export class TorrentService extends EventEmitter {
     res.setHeader("Content-Range", `bytes ${start}-${end}/${file.length}`);
     res.setHeader("Accept-Ranges", "bytes");
     res.setHeader("Content-Length", chunksize);
-    res.setHeader("Content-Type", "video/mp4");
+    res.setHeader("Content-Type", contentType);
 
     const stream = file.createReadStream({ start, end });
     stream.pipe(res);
@@ -127,8 +162,7 @@ export class TorrentService extends EventEmitter {
     stream.on("error", (err: unknown) => {
       logger.error(`Stream error:`, err);
       if (!res.headersSent) {
-        res.statusCode = 500;
-        res.end("Stream Error");
+        res.end();
       }
     });
   }
@@ -157,16 +191,30 @@ export class TorrentService extends EventEmitter {
     return this.client!;
   }
 
-  async seed(filePath: string): Promise<string> {
+  async seed(
+    filePath: string,
+    trackerType: "lan" | "localtunnel" | "untun" = "localtunnel",
+  ): Promise<string> {
     const client = await this.clientReady;
-    logger.info(`Starting seed for file: ${filePath}`);
+    logger.info(`Starting seed for: ${filePath} with tracker type: ${trackerType}`);
+
+    let seedPath = filePath;
+    // For HLS playlists (.m3u8), we must seed the parent directory
+    // so peer can fetch .ts segments
+    if (filePath.endsWith(".m3u8")) {
+      seedPath = path.dirname(filePath);
+      logger.info(`Detected HLS playlist. Seeding directory: ${seedPath}`);
+    }
+
     const startTime = Date.now();
 
     // Start local tracker
     let localTrackerUrl = "";
     try {
+      logger.info("Starting tracker service...");
       this.trackerService.stop();
-      localTrackerUrl = await this.trackerService.start();
+      localTrackerUrl = await this.trackerService.start(trackerType);
+      logger.info(`Tracker service started at ${localTrackerUrl}`);
     } catch (err) {
       logger.error("Failed to start tracker service", err);
     }
@@ -175,7 +223,7 @@ export class TorrentService extends EventEmitter {
       //if (this.activeTorrent) this.cleanup();
 
       const t = client.seed(
-        filePath,
+        seedPath,
         { announce: [localTrackerUrl] },
         (torrent: WebTorrent.Torrent) => {
           logger.info(

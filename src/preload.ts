@@ -40,6 +40,8 @@ const electronAPI = {
     ipcRenderer.invoke("media:analyze", filePath),
   normalizeMedia: (filePath: string) =>
     ipcRenderer.invoke("media:normalize", filePath),
+  segmentMedia: (filePath: string, reEncode: boolean) =>
+    ipcRenderer.invoke("media:segment", filePath, reEncode),
   onMediaProgress: (callback: (percent: number) => void) => {
     const subscription = (_: IpcRendererEvent, percent: number) =>
       callback(percent);
@@ -48,8 +50,8 @@ const electronAPI = {
   },
 
   // Torrent
-  seedTorrent: (filePath: string, trackers: string[]) =>
-    ipcRenderer.invoke("torrent:seed", filePath, trackers),
+  seedTorrent: (filePath: string, trackerType: "lan" | "localtunnel" | "untun") =>
+    ipcRenderer.invoke("torrent:seed", filePath, trackerType),
   addTorrent: (magnet: string) => ipcRenderer.invoke("torrent:add", magnet),
   checkIsHost: () => ipcRenderer.invoke("torrent:is-host"),
   getStreamUrl: () => ipcRenderer.invoke("torrent:get-stream"),

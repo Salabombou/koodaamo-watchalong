@@ -14,6 +14,6 @@
     },
     "jsx": "react-jsx"
   },
-  "include": ["src/**/*", "webpack.*.ts"],
+  "include": ["src/**/*", "webpack.*.ts", "src/declarations.d.ts"],
   "exclude": ["node_modules", ".webpack", "src/bitfield-compat.js"]
 }

@@ -48,8 +48,7 @@ const config: ForgeConfig = {
     new AutoUnpackNativesPlugin({}),
     new WebpackPlugin({
       mainConfig,
-      devContentSecurityPolicy:
-        "default-src 'self' 'unsafe-inline' data:; script-src 'self' 'unsafe-eval' 'unsafe-inline' data:; media-src 'self' 'unsafe-inline' data: http://127.0.0.1:* blob:;",
+      devContentSecurityPolicy: `default-src 'self' 'unsafe-inline' data:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https://cdn.plyr.io; font-src 'self' data: https://fonts.gstatic.com; connect-src 'self' ws: wss: https://cdn.plyr.io; media-src 'self' blob: https://cdn.plyr.io http://127.0.0.1:*`,
       renderer: {
         config: rendererConfig,
         entryPoints: [

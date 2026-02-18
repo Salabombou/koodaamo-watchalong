@@ -6,19 +6,24 @@ import { rendererConfig } from "./webpack.renderer.config";
 const prodConfig: webpack.Configuration = {
   ...rendererConfig,
   mode: "production",
-  target: "web", // 'web' is correct for renderer with contextIsolation: true
-  devtool: "source-map",
-  entry: "./src/renderer.tsx",
+  target: "web",
+  devtool: false,
+  entry: "./src/renderer/index.tsx",
   output: {
-    // Matching Forge's structure: .webpack/renderer/main_window
     path: path.join(__dirname, ".webpack/renderer/main_window"),
     filename: "index.js",
     clean: true,
   },
+  optimization: {
+    ...(rendererConfig.optimization || {}),
+    minimize: true,
+    moduleIds: "deterministic",
+    chunkIds: "deterministic",
+  },
   plugins: [
     ...(rendererConfig.plugins || []),
     new HtmlWebpackPlugin({
-      template: "./src/index.html",
+      template: "./src/renderer/index.html",
     }),
   ],
 };

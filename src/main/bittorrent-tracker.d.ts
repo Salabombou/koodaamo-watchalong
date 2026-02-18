@@ -23,4 +23,3 @@ declare module "bittorrent-tracker" {
     close(callback?: () => void): void;
   }
 }
-

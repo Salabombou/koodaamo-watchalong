@@ -9,11 +9,20 @@
     "sourceMap": true,
     "resolveJsonModule": true,
     "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
     "paths": {
-      "@/*": ["./src/*"]
+      "@shared/*": ["./src/shared/*"],
+      "@routes/*": ["./src/renderer/routes/*"],
+      "@components/*": ["./src/renderer/components/*"],
+      "@controllers/*": ["./src/main/controllers/*"],
+      "@protocols/*": ["./src/main/protocols/*"],
+      "@services/*": ["./src/main/services/*"],
+      "@@types/*": ["./src/main/types/*"],
+      "@utilities/*": ["./src/main/utilities/*"]
     },
     "jsx": "react-jsx"
   },
-  "include": ["src/**/*", "webpack.*.ts", "src/declarations.d.ts"],
-  "exclude": ["node_modules", ".webpack", "src/bitfield-compat.js"]
+  "include": ["src/**/*", "webpack.*.ts", "src/shared/declarations.d.ts"],
+  "exclude": ["node_modules", ".webpack", "src/main/bitfield-compat.js"]
 }

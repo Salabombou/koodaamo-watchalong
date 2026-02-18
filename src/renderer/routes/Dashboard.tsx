@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef, type CSSProperties } from "react";
 import { useSearchParams } from "react-router-dom";
+import { SyncCommand } from "@shared/types";
 
 export default function Dashboard() {
   const [searchParams] = useSearchParams();
@@ -64,7 +65,7 @@ export default function Dashboard() {
   }, [magnet, isHost]);
 
   const startParty = async () => {
-    const cmd = { type: "start-room", timestamp: Date.now() };
+    const cmd: SyncCommand = { type: "start-room", timestamp: Date.now() };
     await window.electronAPI.broadcastCommand(cmd);
     window.electronAPI.openPlayerWindow();
   };
@@ -199,7 +200,7 @@ export default function Dashboard() {
               )}
               <button
                 onClick={copyMagnet}
-                className="btn bg-base-100 border-none hover:bg-white/90 text-base-content font-bold"
+                className="btn bg-base-100 border-none hover:bg-base-200 text-base-content font-bold"
               >
                 COPY
               </button>

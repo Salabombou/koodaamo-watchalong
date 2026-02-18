@@ -6,10 +6,19 @@ export default function Home() {
   const [isDirty, setIsDirty] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
 
-  // Initialize state based on current theme for UI sync
   const [darkMode, setDarkMode] = useState(() => {
-    const stored = localStorage.getItem("darkMode");
-    return stored === "true" || stored === "black";
+    const storedTheme = localStorage.getItem("theme");
+    if (storedTheme === "lofi" || storedTheme === "lofi-inverted") {
+      return storedTheme === "lofi-inverted";
+    }
+
+    const storedLegacy = localStorage.getItem("darkMode");
+    return (
+      storedLegacy === "true" ||
+      storedLegacy === "black" ||
+      storedLegacy === "forest" ||
+      storedLegacy === "lofi-inverted"
+    );
   });
 
   const navigate = useNavigate();
@@ -37,8 +46,9 @@ export default function Home() {
   const toggleDarkMode = () => {
     const newVal = !darkMode;
     setDarkMode(newVal);
-    const theme = newVal ? "black" : "lofi";
-    localStorage.setItem("darkMode", theme); // Store 'black' or 'light' ideally, but consistent w/ App logic
+    const theme = newVal ? "lofi-inverted" : "lofi";
+    localStorage.setItem("theme", theme);
+    localStorage.setItem("darkMode", theme);
     document.documentElement.setAttribute("data-theme", theme);
   };
 

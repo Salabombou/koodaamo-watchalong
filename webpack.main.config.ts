@@ -9,7 +9,7 @@ export const mainConfig: Configuration = {
    * This is the main entry point for your application, it's the first file
    * that runs in the main process.
    */
-  entry: "./src/index.ts",
+  entry: "./src/main/index.ts",
   // Put your normal webpack config below here
   module: {
     rules: [
@@ -43,7 +43,13 @@ export const mainConfig: Configuration = {
     extensions: [".js", ".ts", ".jsx", ".tsx", ".css", ".json"],
     conditionNames: ["node", "require", "import", "default"],
     alias: {
-      bitfield$: path.resolve(__dirname, "src/bitfield-compat.js"),
+      bitfield$: path.resolve(__dirname, "src/main/bitfield-compat.js"),
+      "@shared": path.resolve(__dirname, "src/shared"),
+      "@controllers": path.resolve(__dirname, "src/main/controllers"),
+      "@protocols": path.resolve(__dirname, "src/main/protocols"),
+      "@services": path.resolve(__dirname, "src/main/services"),
+      "@@types": path.resolve(__dirname, "src/main/types"),
+      "@utilities": path.resolve(__dirname, "src/main/utilities"),
     },
   },
 };

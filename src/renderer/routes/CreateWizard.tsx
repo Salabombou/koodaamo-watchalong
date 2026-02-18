@@ -1,5 +1,11 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import {
+  type FfmpegPreset,
+  type HardwareAccelerationInfo,
+  type MediaAnalysis,
+  type SegmentMediaOptions,
+} from "@shared/types";
 
 const STEPS = [
   { title: "Select File", description: "Choose video file" },
@@ -8,15 +14,39 @@ const STEPS = [
   { title: "Launch", description: "Start room" },
 ];
 
-interface MediaAnalysis {
-  needsNormalization: boolean;
-  format: string;
-  codecs: {
-    video: string;
-    audio: string;
-  };
-  duration: number;
-}
+const PRESETS: FfmpegPreset[] = [
+  "veryfast",
+  "fast",
+  "medium",
+  "slow",
+  "veryslow",
+];
+
+const isAssCodec = (codec: string) =>
+  ["ass", "ssa"].includes(codec.toLowerCase());
+
+const normalizeEvenDimension = (value: number) => {
+  const rounded = Math.max(2, Math.round(value));
+  return rounded % 2 === 0 ? rounded : rounded - 1;
+};
+
+const deriveHeight = (
+  width: number,
+  sourceWidth: number,
+  sourceHeight: number,
+) => {
+  if (!sourceWidth || !sourceHeight) return width;
+  return normalizeEvenDimension((width * sourceHeight) / sourceWidth);
+};
+
+const deriveWidth = (
+  height: number,
+  sourceWidth: number,
+  sourceHeight: number,
+) => {
+  if (!sourceWidth || !sourceHeight) return height;
+  return normalizeEvenDimension((height * sourceWidth) / sourceHeight);
+};
 
 export default function CreateWizard() {
   const [step, setStep] = useState(0);
@@ -25,19 +55,117 @@ export default function CreateWizard() {
   const [analysis, setAnalysis] = useState<MediaAnalysis | null>(null);
   const [segmenting, setSegmenting] = useState(false);
   const [segmentedPath, setSegmentedPath] = useState<string>("");
-  const [reEncode, setReEncode] = useState(true);
+  const [reEncodeVideo, setReEncodeVideo] = useState(true);
+  const [burnAssSubtitles, setBurnAssSubtitles] = useState(false);
+  const [burnSubtitleStreamIndex, setBurnSubtitleStreamIndex] = useState<
+    number | null
+  >(null);
+  const [preset, setPreset] = useState<FfmpegPreset>("veryfast");
+  const [scaleVideo, setScaleVideo] = useState(false);
+  const [targetWidth, setTargetWidth] = useState<number | null>(null);
+  const [targetHeight, setTargetHeight] = useState<number | null>(null);
+  const [lockAspectRatio, setLockAspectRatio] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [creating, setCreating] = useState(false);
+  const [useHardwareAcceleration, setUseHardwareAcceleration] = useState(false);
+  const [hwAccelInfo, setHwAccelInfo] =
+    useState<HardwareAccelerationInfo | null>(null);
+  const [hwAccelLoading, setHwAccelLoading] = useState(false);
   const [trackerType, setTrackerType] = useState<
     "lan" | "localtunnel" | "untun"
   >("localtunnel");
   const navigate = useNavigate();
 
+  const sourceWidth = analysis?.video.width ?? 0;
+  const sourceHeight = analysis?.video.height ?? 0;
+  const assSubtitleTracks = useMemo(
+    () => analysis?.subtitles.filter((track) => isAssCodec(track.codec)) ?? [],
+    [analysis],
+  );
+
+  const canBurnAss = reEncodeVideo && assSubtitleTracks.length > 0;
+  const canUseVideoOptions = reEncodeVideo;
+  const canUseHardwareAcceleration = hwAccelInfo?.cudaAvailable ?? false;
+  const hasValidScaleDimensions =
+    !scaleVideo ||
+    (targetWidth !== null &&
+      targetHeight !== null &&
+      targetWidth % 2 === 0 &&
+      targetHeight % 2 === 0);
+
+  useEffect(() => {
+    if (!analysis) return;
+
+    const normalizedWidth = normalizeEvenDimension(analysis.video.width || 2);
+    const normalizedHeight = normalizeEvenDimension(analysis.video.height || 2);
+
+    setTargetWidth(normalizedWidth);
+    setTargetHeight(normalizedHeight);
+  }, [analysis]);
+
+  useEffect(() => {
+    if (!canBurnAss) {
+      setBurnAssSubtitles(false);
+      setBurnSubtitleStreamIndex(null);
+      return;
+    }
+
+    if (burnAssSubtitles && burnSubtitleStreamIndex === null) {
+      setBurnSubtitleStreamIndex(assSubtitleTracks[0]?.index ?? null);
+    }
+  }, [
+    assSubtitleTracks,
+    burnAssSubtitles,
+    burnSubtitleStreamIndex,
+    canBurnAss,
+  ]);
+
+  useEffect(() => {
+    if (reEncodeVideo) return;
+    setBurnAssSubtitles(false);
+    setScaleVideo(false);
+  }, [reEncodeVideo]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadHardwareAccelerationInfo = async () => {
+      setHwAccelLoading(true);
+      try {
+        const info = await window.electronAPI.getHardwareAccelerationInfo();
+        if (cancelled) return;
+        setHwAccelInfo(info);
+        if (!info.cudaAvailable) {
+          setUseHardwareAcceleration(false);
+        }
+      } catch (error) {
+        if (cancelled) return;
+        setHwAccelInfo({
+          cudaCompiled: false,
+          cudaAvailable: false,
+          details: `Failed to check CUDA availability: ${String(error)}`,
+        });
+        setUseHardwareAcceleration(false);
+      } finally {
+        if (!cancelled) {
+          setHwAccelLoading(false);
+        }
+      }
+    };
+
+    void loadHardwareAccelerationInfo();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const canContinue = () => {
     if (step === 0) return !!filePath;
     if (step === 1) return analysis && !analyzing;
-    if (step === 2) return !!segmentedPath && !segmenting;
+    if (step === 2)
+      return !!segmentedPath && !segmenting && hasValidScaleDimensions;
     return true;
   };
 
@@ -69,6 +197,10 @@ export default function CreateWizard() {
       try {
         const result = await window.electronAPI.analyzeMedia(path);
         setAnalysis(result);
+        setBurnAssSubtitles(false);
+        setBurnSubtitleStreamIndex(null);
+        setScaleVideo(false);
+        setPreset("veryfast");
       } catch (error) {
         console.error("Analysis failed", error);
         alert("Failed to analyze video file.");
@@ -80,6 +212,11 @@ export default function CreateWizard() {
 
   const handleSegmentation = async () => {
     if (!filePath) return;
+    if (scaleVideo && !hasValidScaleDimensions) {
+      alert("Width and height must be even numbers.");
+      return;
+    }
+
     setSegmenting(true);
     setProgress(0);
 
@@ -88,9 +225,25 @@ export default function CreateWizard() {
     });
 
     try {
+      const options: SegmentMediaOptions = {
+        reEncodeVideo,
+        reEncodeAudio: true,
+        burnAssSubtitles:
+          canBurnAss && burnAssSubtitles && burnSubtitleStreamIndex !== null,
+        burnSubtitleStreamIndex:
+          canBurnAss && burnAssSubtitles ? burnSubtitleStreamIndex : null,
+        preset: reEncodeVideo ? preset : "veryfast",
+        scaleVideo: canUseVideoOptions && scaleVideo,
+        targetWidth: canUseVideoOptions && scaleVideo ? targetWidth : null,
+        targetHeight: canUseVideoOptions && scaleVideo ? targetHeight : null,
+        lockAspectRatio,
+        useHardwareAcceleration:
+          useHardwareAcceleration && canUseHardwareAcceleration,
+      };
+
       const resultPath = await window.electronAPI.segmentMedia(
         filePath,
-        reEncode,
+        options,
       );
       setSegmentedPath(resultPath);
       nextStep(); // Auto advance to launch step
@@ -141,6 +294,33 @@ export default function CreateWizard() {
       alert("Failed to create room");
       setCreating(false);
     }
+  };
+
+  const handleWidthChange = (value: number) => {
+    const normalizedWidth = normalizeEvenDimension(value);
+    setTargetWidth(normalizedWidth);
+
+    if (!lockAspectRatio || !sourceWidth || !sourceHeight) return;
+
+    setTargetHeight(deriveHeight(normalizedWidth, sourceWidth, sourceHeight));
+  };
+
+  const handleHeightChange = (value: number) => {
+    const normalizedHeight = normalizeEvenDimension(value);
+    setTargetHeight(normalizedHeight);
+
+    if (!lockAspectRatio || !sourceWidth || !sourceHeight) return;
+
+    setTargetWidth(deriveWidth(normalizedHeight, sourceWidth, sourceHeight));
+  };
+
+  const handleLockAspectToggle = (checked: boolean) => {
+    setLockAspectRatio(checked);
+
+    if (!checked || targetWidth === null || !sourceWidth || !sourceHeight)
+      return;
+
+    setTargetHeight(deriveHeight(targetWidth, sourceWidth, sourceHeight));
   };
 
   return (
@@ -222,11 +402,29 @@ export default function CreateWizard() {
                         <div className="stat-value text-2xl font-mono">
                           {analysis.codecs.video}
                         </div>
+                        <div className="stat-desc font-mono">
+                          {analysis.video.width}×{analysis.video.height}
+                        </div>
                       </div>
                       <div className="stat">
                         <div className="stat-title font-bold">Audio Codec</div>
                         <div className="stat-value text-2xl font-mono">
                           {analysis.codecs.audio}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="alert alert-info shadow-lg">
+                      <div>
+                        <h3 className="font-bold">Detected Subtitle Tracks</h3>
+                        <div className="text-xs mt-1">
+                          {analysis.subtitles.length > 0
+                            ? analysis.subtitles
+                                .map(
+                                  (track) => `${track.title} (${track.codec})`,
+                                )
+                                .join(" • ")
+                            : "No subtitle tracks found in ffprobe analysis."}
                         </div>
                       </div>
                     </div>
@@ -293,17 +491,257 @@ export default function CreateWizard() {
                       <input
                         type="checkbox"
                         className="toggle toggle-primary"
-                        checked={reEncode}
-                        onChange={(e) => setReEncode(e.target.checked)}
+                        checked={reEncodeVideo}
+                        onChange={(e) => setReEncodeVideo(e.target.checked)}
                         disabled={segmenting || !!segmentedPath}
                       />
                     </label>
                     <div className="text-xs opacity-70 ml-2">
-                      Disable this only if you know the video is already H.264
-                      compatible. Re-encoding ensures compatibility but takes
-                      longer.
+                      Enables video filtering and compatibility controls, but
+                      increases processing time.
                     </div>
                   </div>
+
+                  <div className="form-control">
+                    <label className="label cursor-pointer justify-start gap-4">
+                      <span className="label-text text-lg font-bold">
+                        Re-encode Audio
+                      </span>
+                      <input
+                        type="checkbox"
+                        className="toggle toggle-primary"
+                        checked
+                        disabled
+                      />
+                    </label>
+                    <div className="text-xs opacity-70 ml-2">
+                      Audio is always re-encoded to keep HLS playback consistent
+                      across clients.
+                    </div>
+                  </div>
+
+                  <div className="form-control">
+                    <label className="label cursor-pointer justify-start gap-4">
+                      <span className="label-text text-lg font-bold">
+                        Enable GPU Hardware Acceleration (CUDA)
+                      </span>
+                      <input
+                        type="checkbox"
+                        className="toggle toggle-primary"
+                        checked={useHardwareAcceleration}
+                        onChange={(e) =>
+                          setUseHardwareAcceleration(e.target.checked)
+                        }
+                        disabled={
+                          segmenting ||
+                          !!segmentedPath ||
+                          hwAccelLoading ||
+                          !canUseHardwareAcceleration
+                        }
+                      />
+                    </label>
+                    <div className="text-xs opacity-70 ml-2">
+                      Uses CUDA decoding assistance when available to reduce CPU
+                      load.
+                    </div>
+                    <div className="text-xs ml-2 mt-1 opacity-70">
+                      {hwAccelLoading
+                        ? "Checking CUDA availability..."
+                        : hwAccelInfo?.cudaAvailable
+                          ? `CUDA available: ${hwAccelInfo.details}`
+                          : `CUDA unavailable: ${hwAccelInfo?.details ?? "No GPU acceleration detected."}`}
+                    </div>
+                  </div>
+
+                  <div className="form-control">
+                    <label className="label cursor-pointer justify-start gap-4">
+                      <span className="label-text text-lg font-bold">
+                        Burn Complex Captions (ASS) Into Video
+                      </span>
+                      <input
+                        type="checkbox"
+                        className="toggle toggle-primary"
+                        checked={burnAssSubtitles}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          setBurnAssSubtitles(checked);
+                          if (checked && burnSubtitleStreamIndex === null) {
+                            setBurnSubtitleStreamIndex(
+                              assSubtitleTracks[0]?.index ?? null,
+                            );
+                          }
+                        }}
+                        disabled={segmenting || !!segmentedPath || !canBurnAss}
+                      />
+                    </label>
+                    <div className="text-xs opacity-70 ml-2">
+                      Renders ASS/SSA subtitle styling directly into the video
+                      stream.
+                    </div>
+
+                    {!reEncodeVideo && (
+                      <div className="text-xs opacity-60 ml-2 mt-1">
+                        Enable video re-encoding to unlock caption burn-in.
+                      </div>
+                    )}
+
+                    {reEncodeVideo && assSubtitleTracks.length === 0 && (
+                      <div className="text-xs opacity-60 ml-2 mt-1">
+                        No ASS/SSA tracks detected from ffprobe analysis.
+                      </div>
+                    )}
+
+                    {canBurnAss && burnAssSubtitles && (
+                      <div className="mt-3 ml-2 max-w-lg">
+                        <label className="label pb-1">
+                          <span className="label-text font-bold text-sm">
+                            ASS Track To Burn
+                          </span>
+                        </label>
+                        <select
+                          className="select select-bordered w-full"
+                          value={burnSubtitleStreamIndex ?? ""}
+                          onChange={(e) =>
+                            setBurnSubtitleStreamIndex(Number(e.target.value))
+                          }
+                          disabled={segmenting || !!segmentedPath}
+                        >
+                          {assSubtitleTracks.map((track) => (
+                            <option key={track.index} value={track.index}>
+                              {track.title} ({track.language}, {track.codec})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="form-control">
+                    <label className="label cursor-pointer justify-start gap-4">
+                      <span className="label-text text-lg font-bold">
+                        Encoder Preset
+                      </span>
+                      <select
+                        className="select select-bordered min-w-40"
+                        value={preset}
+                        onChange={(e) =>
+                          setPreset(e.target.value as FfmpegPreset)
+                        }
+                        disabled={
+                          segmenting || !!segmentedPath || !canUseVideoOptions
+                        }
+                      >
+                        {PRESETS.map((presetOption) => (
+                          <option key={presetOption} value={presetOption}>
+                            {presetOption}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <div className="text-xs opacity-70 ml-2">
+                      Faster presets trade compression efficiency for speed.
+                    </div>
+                    {!reEncodeVideo && (
+                      <div className="text-xs opacity-60 ml-2 mt-1">
+                        Enable video re-encoding to change encoder preset.
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="form-control">
+                    <label className="label cursor-pointer justify-start gap-4">
+                      <span className="label-text text-lg font-bold">
+                        Scale Video
+                      </span>
+                      <input
+                        type="checkbox"
+                        className="toggle toggle-primary"
+                        checked={scaleVideo}
+                        onChange={(e) => setScaleVideo(e.target.checked)}
+                        disabled={
+                          segmenting || !!segmentedPath || !canUseVideoOptions
+                        }
+                      />
+                    </label>
+                    <div className="text-xs opacity-70 ml-2">
+                      Resize the encoded output resolution. Width and height are
+                      forced to even values.
+                    </div>
+
+                    {!reEncodeVideo && (
+                      <div className="text-xs opacity-60 ml-2 mt-1">
+                        Enable video re-encoding to unlock scaling.
+                      </div>
+                    )}
+
+                    {canUseVideoOptions && scaleVideo && (
+                      <div className="mt-3 ml-2 space-y-3 max-w-xl">
+                        <label className="label cursor-pointer justify-start gap-4 p-0">
+                          <span className="label-text text-sm font-bold">
+                            Lock Aspect Ratio To Source
+                          </span>
+                          <input
+                            type="checkbox"
+                            className="checkbox checkbox-primary checkbox-sm"
+                            checked={lockAspectRatio}
+                            onChange={(e) =>
+                              handleLockAspectToggle(e.target.checked)
+                            }
+                            disabled={segmenting || !!segmentedPath}
+                          />
+                        </label>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <label className="form-control w-full">
+                            <span className="label-text text-xs font-bold opacity-70 mb-1">
+                              Width
+                            </span>
+                            <input
+                              type="number"
+                              className="input input-bordered"
+                              min={2}
+                              step={2}
+                              value={targetWidth ?? ""}
+                              onChange={(e) =>
+                                handleWidthChange(Number(e.target.value))
+                              }
+                              disabled={segmenting || !!segmentedPath}
+                            />
+                          </label>
+
+                          <label className="form-control w-full">
+                            <span className="label-text text-xs font-bold opacity-70 mb-1">
+                              Height
+                            </span>
+                            <input
+                              type="number"
+                              className="input input-bordered"
+                              min={2}
+                              step={2}
+                              value={targetHeight ?? ""}
+                              onChange={(e) =>
+                                handleHeightChange(Number(e.target.value))
+                              }
+                              disabled={
+                                segmenting || !!segmentedPath || lockAspectRatio
+                              }
+                            />
+                          </label>
+                        </div>
+                        <div className="text-xs opacity-60">
+                          Source: {sourceWidth}×{sourceHeight} • Output values
+                          are normalized to even numbers.
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {!hasValidScaleDimensions && (
+                    <div className="alert alert-error shadow-lg">
+                      <span className="text-sm font-bold">
+                        Width and height must be even numbers.
+                      </span>
+                    </div>
+                  )}
 
                   {segmenting ? (
                     <div className="flex flex-col gap-2 w-full">

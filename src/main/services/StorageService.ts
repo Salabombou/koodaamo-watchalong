@@ -2,7 +2,7 @@ import fs from "fs-extra";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
 
-import logger from "../utilities/logging";
+import logger from "@utilities/logging";
 
 export class StorageService {
   private storagePath: string;

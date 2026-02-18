@@ -1,13 +1,15 @@
 import WebTorrent from "webtorrent";
 import { TrackerService } from "./TrackerService";
-import { SyncExtension, EXTENSION_NAME } from "../protocol/SyncExtension";
-import type { SyncCommand, Wire } from "../protocol/SyncExtension";
+import { SyncExtension, EXTENSION_NAME } from "@protocols/SyncExtension";
+import type { Wire } from "@protocols/SyncExtension";
+import { SyncCommand } from "@shared/types";
 import { EventEmitter } from "events";
 import rangeParser from "range-parser";
 import http from "http";
 import path from "path";
+import fs from "fs";
 import type { AddressInfo } from "net";
-import logger from "../utilities/logging";
+import logger from "@utilities/logging";
 
 export class TorrentService extends EventEmitter {
   client: WebTorrent.Instance | undefined;
@@ -70,12 +72,20 @@ export class TorrentService extends EventEmitter {
     }
 
     const url = req.url || "/";
-    const cleanPath = decodeURIComponent(url.split("?")[0]);
+    const cleanUrl = decodeURIComponent(url.split("?")[0]);
+    let targetPath = cleanUrl;
+
+    // Remove /stream/ prefix if present
+    if (targetPath.startsWith("/stream/")) {
+      targetPath = targetPath.slice("/stream/".length);
+    } else if (targetPath === "/stream") {
+      targetPath = "";
+    }
 
     // Find file based on request path
     let file: WebTorrent.TorrentFile | undefined;
 
-    if (cleanPath === "/" || cleanPath === "") {
+    if (targetPath === "" || targetPath === "/") {
       // Default: prioritize m3u8, then video
       file = this.activeTorrent.files.find((f) => f.name.endsWith(".m3u8"));
       if (!file) {
@@ -84,22 +94,9 @@ export class TorrentService extends EventEmitter {
         );
       }
     } else {
-      // Logic to match requested file.
-      // If we are seeding a folder "uuid/video.m3u8", the torrent structure is:
-      // - uuid/video.m3u8
-      // - uuid/segment.ts
-      // The request might be "/video.m3u8" or "/segment.ts" if the player treats root as base.
-
-      const searchName = cleanPath.startsWith("/")
-        ? cleanPath.slice(1)
-        : cleanPath;
-
+      // Match exact filename or path ending with request
       file = this.activeTorrent.files.find((f) => {
-        // If the torrent is a single file, f.path is just the name.
-        // If it's a folder, f.path is "Folder/file.name".
-        // We should match loosely against the end of the path to be safe,
-        // or ideally exact match if the client handles paths correctly.
-        return f.name === searchName || f.path.endsWith(searchName);
+        return f.name === targetPath || f.path.endsWith(targetPath);
       });
     }
 
@@ -111,6 +108,19 @@ export class TorrentService extends EventEmitter {
 
     file.select();
 
+    // Determine Absolute Path on Disk
+    const absPath = path.join(this.activeTorrent.path, file.path);
+
+    // Check if file exists on disk
+    if (!fs.existsSync(absPath)) {
+      res.statusCode = 404;
+      res.end("File not yet downloaded or missing");
+      return;
+    }
+
+    const stat = fs.statSync(absPath);
+    const fileSize = stat.size;
+
     // Determine Content-Type
     let contentType = "application/octet-stream";
     if (file.name.endsWith(".m3u8"))
@@ -120,15 +130,15 @@ export class TorrentService extends EventEmitter {
     else if (file.name.endsWith(".webm")) contentType = "video/webm";
     else if (file.name.endsWith(".vtt")) contentType = "text/vtt";
 
-    // Handle Range Requests (important for seeking in MP4, less so for TS but good to have)
+    // Handle Range Requests
     const rangeHeader = req.headers.range;
 
     if (!rangeHeader) {
-      res.setHeader("Content-Length", file.length);
+      res.setHeader("Content-Length", fileSize);
       res.setHeader("Content-Type", contentType);
       res.setHeader("Accept-Ranges", "bytes");
 
-      const stream = file.createReadStream();
+      const stream = fs.createReadStream(absPath);
       stream.pipe(res);
       stream.on("error", (err) => {
         logger.error("Stream error", err);
@@ -137,12 +147,11 @@ export class TorrentService extends EventEmitter {
       return;
     }
 
-    const parts = rangeParser(file.length, rangeHeader);
+    const parts = rangeParser(fileSize, rangeHeader);
 
-    // range-parser can return -1 (unsatisfiable), -2 (malformed), or an array of ranges
     if (parts === -1 || parts === -2 || !Array.isArray(parts)) {
       res.statusCode = 416;
-      res.setHeader("Content-Range", `bytes */${file.length}`);
+      res.setHeader("Content-Range", `bytes */${fileSize}`);
       res.end();
       return;
     }
@@ -151,12 +160,12 @@ export class TorrentService extends EventEmitter {
     const chunksize = end - start + 1;
 
     res.statusCode = 206;
-    res.setHeader("Content-Range", `bytes ${start}-${end}/${file.length}`);
+    res.setHeader("Content-Range", `bytes ${start}-${end}/${fileSize}`);
     res.setHeader("Accept-Ranges", "bytes");
     res.setHeader("Content-Length", chunksize);
     res.setHeader("Content-Type", contentType);
 
-    const stream = file.createReadStream({ start, end });
+    const stream = fs.createReadStream(absPath, { start, end });
     stream.pipe(res);
 
     stream.on("error", (err: unknown) => {
@@ -196,7 +205,9 @@ export class TorrentService extends EventEmitter {
     trackerType: "lan" | "localtunnel" | "untun" = "localtunnel",
   ): Promise<string> {
     const client = await this.clientReady;
-    logger.info(`Starting seed for: ${filePath} with tracker type: ${trackerType}`);
+    logger.info(
+      `Starting seed for: ${filePath} with tracker type: ${trackerType}`,
+    );
 
     let seedPath = filePath;
     // For HLS playlists (.m3u8), we must seed the parent directory
@@ -320,9 +331,7 @@ export class TorrentService extends EventEmitter {
       });
     });
 
-    // @ts-expect-error - wires might be missing from types --- IGNORE ---
     if (torrent.wires) {
-      // @ts-expect-error - wires might be missing from types --- IGNORE ---
       torrent.wires.forEach((wire: Wire) => {
         const remote = `${wire.remoteAddress}:${wire.remotePort}`;
         logger.info(`Attaching to existing wire: ${wire.peerId} (${remote})`);
@@ -351,7 +360,7 @@ export class TorrentService extends EventEmitter {
 
   getStreamUrl(): string {
     if (this.streamPort === 0) return "";
-    return `http://127.0.0.1:${this.streamPort}/stream`;
+    return `http://127.0.0.1:${this.streamPort}/stream/master.m3u8`;
   }
 
   private async waitForReady(torrent: WebTorrent.Torrent) {

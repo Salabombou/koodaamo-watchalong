@@ -4,23 +4,12 @@ import { createRequire } from "module";
 import * as path from "path";
 import * as fs from "fs";
 
-import logger from "../utilities/logging";
-
-export interface MediaAnalysis {
-  needsNormalization: boolean;
-  format: string;
-  codecs: {
-    video: string;
-    audio: string;
-  };
-  subtitles: {
-    index: number;
-    language: string;
-    codec: string;
-    title: string;
-  }[];
-  duration: number;
-}
+import logger from "@utilities/logging";
+import {
+  HardwareAccelerationInfo,
+  MediaAnalysis,
+  SegmentMediaOptions,
+} from "@shared/types";
 
 let ffmpegPath: string;
 let ffprobePath: string;
@@ -38,6 +27,98 @@ if (app.isPackaged) {
 }
 
 export class MediaService {
+  private runProcess(
+    command: string,
+    args: string[],
+  ): Promise<{ code: number | null; stdout: string; stderr: string }> {
+    return new Promise((resolve, reject) => {
+      const process = spawn(command, args);
+      let stdout = "";
+      let stderr = "";
+
+      process.stdout.on("data", (data) => {
+        stdout += data.toString();
+      });
+
+      process.stderr.on("data", (data) => {
+        stderr += data.toString();
+      });
+
+      process.on("error", (error) => reject(error));
+      process.on("close", (code) => resolve({ code, stdout, stderr }));
+    });
+  }
+
+  async getHardwareAccelerationInfo(): Promise<HardwareAccelerationInfo> {
+    if (!ffmpegPath) {
+      return {
+        cudaCompiled: false,
+        cudaAvailable: false,
+        details: "ffmpeg binary not found",
+      };
+    }
+
+    try {
+      const hwaccelsResult = await this.runProcess(ffmpegPath, [
+        "-hide_banner",
+        "-hwaccels",
+      ]);
+      const hwaccelOutput =
+        `${hwaccelsResult.stdout}\n${hwaccelsResult.stderr}`.toLowerCase();
+      const cudaCompiled = hwaccelOutput.includes("cuda");
+
+      if (!cudaCompiled) {
+        return {
+          cudaCompiled: false,
+          cudaAvailable: false,
+          details: "ffmpeg does not report CUDA hwaccel support",
+        };
+      }
+
+      const probeResult = await this.runProcess(ffmpegPath, [
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-hwaccel",
+        "cuda",
+        "-i",
+        "color=c=black:s=16x16:d=0.1",
+        "-frames:v",
+        "1",
+        "-f",
+        "null",
+        "-",
+      ]);
+
+      if (probeResult.code === 0) {
+        return {
+          cudaCompiled: true,
+          cudaAvailable: true,
+          details: "CUDA hardware acceleration is available",
+        };
+      }
+
+      const reason = (
+        probeResult.stderr ||
+        probeResult.stdout ||
+        "unknown error"
+      ).trim();
+      return {
+        cudaCompiled: true,
+        cudaAvailable: false,
+        details: `CUDA reported by ffmpeg but failed to initialize: ${reason}`,
+      };
+    } catch (error) {
+      return {
+        cudaCompiled: false,
+        cudaAvailable: false,
+        details: `Failed to probe CUDA support: ${String(error)}`,
+      };
+    }
+  }
+
   async analyze(filePath: string): Promise<MediaAnalysis> {
     logger.info("Analyzing file:", filePath);
     return new Promise((resolve, reject) => {
@@ -91,6 +172,8 @@ export class MediaService {
           const audioCodec = audioStream?.codec_name || "unknown";
           const formatName = metadata.format.format_name || "unknown";
           const duration = parseFloat(metadata.format.duration || "0");
+          const width = Number(videoStream?.width || 0);
+          const height = Number(videoStream?.height || 0);
 
           // Simple check for normalization need (h264 + aac is standard)
           const needsNormalization =
@@ -116,6 +199,10 @@ export class MediaService {
             codecs: {
               video: videoCodec,
               audio: audioCodec,
+            },
+            video: {
+              width,
+              height,
             },
             subtitles,
             duration,
@@ -210,13 +297,34 @@ export class MediaService {
     });
   }
 
+  private normalizeEvenDimension(value: number): number {
+    const rounded = Math.max(2, Math.round(value));
+    return rounded % 2 === 0 ? rounded : rounded - 1;
+  }
+
+  private escapeFilterPath(filePath: string): string {
+    return filePath
+      .replace(/\\/g, "/")
+      .replace(/:/g, "\\:")
+      .replace(/'/g, "\\'");
+  }
+
   async segmentMedia(
     filePath: string,
     outputDir: string,
-    reEncode = true,
+    options: SegmentMediaOptions,
     progressCallback?: (percent: number) => void,
   ): Promise<string> {
-    // The master playlist name
+    let hardwareAccelerationInfo: HardwareAccelerationInfo | null = null;
+    if (options.useHardwareAcceleration) {
+      hardwareAccelerationInfo = await this.getHardwareAccelerationInfo();
+      if (!hardwareAccelerationInfo.cudaAvailable) {
+        throw new Error(
+          `Hardware acceleration requested but CUDA is unavailable: ${hardwareAccelerationInfo.details}`,
+        );
+      }
+    }
+
     const masterPlaylist = "master.m3u8";
 
     // Ensure output directory exists
@@ -224,53 +332,144 @@ export class MediaService {
       await fs.promises.mkdir(outputDir, { recursive: true });
     }
 
-    let duration: number;
-    let hasSubtitles = false;
-    let subtitleIndexToMap = -1;
+    let duration = 0;
+    let analysis: MediaAnalysis;
 
     try {
-      const analysis = await this.analyze(filePath);
+      analysis = await this.analyze(filePath);
       duration = analysis.duration;
-      // Only consider text-based subtitles for HLS WebVTT conversion
-      // Image-based subtitles (PGS, VobSub) cannot be easily converted to WebVTT by FFmpeg and will cause errors
-      const textSubtitleCodecs = ["subrip", "ass", "ssa", "mov_text", "webvtt", "text"];
-      const validSubtitle = analysis.subtitles.find(s => textSubtitleCodecs.includes(s.codec));
-      if (validSubtitle) {
-        hasSubtitles = true;
-        subtitleIndexToMap = validSubtitle.index;
-      }
     } catch (_e) {
       logger.warn("Could not determine duration or analyze media");
-      duration = 0;
+      throw new Error("Failed to analyze media before segmentation");
     }
+
+    if (
+      !options.reEncodeVideo &&
+      (options.burnAssSubtitles || options.scaleVideo)
+    ) {
+      throw new Error(
+        "Burning ASS subtitles and scaling require video re-encoding to be enabled.",
+      );
+    }
+
+    const selectedBurnTrack =
+      options.burnSubtitleStreamIndex === null
+        ? null
+        : analysis.subtitles.find(
+            (sub) => sub.index === options.burnSubtitleStreamIndex,
+          );
+
+    if (options.burnAssSubtitles) {
+      if (!selectedBurnTrack) {
+        throw new Error("Selected ASS subtitle track is missing.");
+      }
+
+      if (!["ass", "ssa"].includes(selectedBurnTrack.codec.toLowerCase())) {
+        throw new Error("Burn-in supports ASS/SSA tracks only.");
+      }
+    }
+
+    const shouldScale = options.reEncodeVideo && options.scaleVideo;
+    const requestedWidth = options.targetWidth ?? analysis.video.width;
+    const requestedHeight = options.targetHeight ?? analysis.video.height;
+    const scaledWidth = shouldScale
+      ? this.normalizeEvenDimension(requestedWidth || 2)
+      : null;
+    const scaledHeight = shouldScale
+      ? this.normalizeEvenDimension(requestedHeight || 2)
+      : null;
+
+    if (shouldScale && (!scaledWidth || !scaledHeight)) {
+      throw new Error("Scaling requires target width and height.");
+    }
+
+    // 1. Prepare Subtitle Extraction (VTT sidecars only)
+    const subtitleManifest: Array<{
+      index: number;
+      language: string;
+      label: string;
+      src: string;
+      format: "vtt";
+    }> = [];
+    const sidecarArgs: string[] = [];
+
+    // Analyze subtitles to extract
+    for (const sub of analysis.subtitles) {
+      if (isNaN(sub.index)) continue;
+      if (["ass", "ssa"].includes(sub.codec.toLowerCase())) continue;
+
+      const filename = `sub_${sub.index}_${sub.language}.vtt`;
+
+      // Add to manifest
+      subtitleManifest.push({
+        index: sub.index,
+        language: sub.language,
+        label: sub.title,
+        src: filename,
+        format: "vtt",
+      });
+
+      // Add extraction command args
+      sidecarArgs.push("-map", `0:${sub.index}`);
+      sidecarArgs.push("-c:s", "webvtt");
+      sidecarArgs.push(filename);
+    }
+
+    // Write manifest
+    await fs.promises.writeFile(
+      path.join(outputDir, "subtitles.json"),
+      JSON.stringify(subtitleManifest, null, 2),
+    );
 
     return new Promise((resolve, reject) => {
       if (!ffmpegPath) {
         return reject(new Error("ffmpeg binary not found"));
       }
 
-      const args = ["-y", "-i", filePath];
+      const args = ["-y"];
+
+      if (options.useHardwareAcceleration) {
+        args.push("-hwaccel", "cuda");
+      }
+
+      args.push("-i", filePath);
 
       // Video and Audio mapping
       args.push("-map", "0:v:0", "-map", "0:a:0");
 
-      if (hasSubtitles && subtitleIndexToMap >= 0) {
-        // Map only the first compatible text-based subtitle track
-        args.push("-map", `0:${subtitleIndexToMap}`);
-      }
+      if (options.reEncodeVideo) {
+        const filters: string[] = [];
 
-      // Codecs
-      if (reEncode) {
-        args.push("-c:v", "libx264", "-crf", "23", "-preset", "veryfast");
+        if (shouldScale && scaledWidth && scaledHeight) {
+          filters.push(`scale=${scaledWidth}:${scaledHeight}`);
+        }
+
+        if (options.burnAssSubtitles && selectedBurnTrack) {
+          const subtitleTrackPosition = analysis.subtitles.findIndex(
+            (sub) => sub.index === selectedBurnTrack.index,
+          );
+          if (subtitleTrackPosition < 0) {
+            throw new Error(
+              "Selected ASS subtitle track position could not be resolved.",
+            );
+          }
+
+          const escapedPath = this.escapeFilterPath(filePath);
+          filters.push(
+            `subtitles='${escapedPath}':si=${subtitleTrackPosition}`,
+          );
+        }
+
+        if (filters.length > 0) {
+          args.push("-vf", filters.join(","));
+        }
+
+        args.push("-c:v", "libx264", "-crf", "23", "-preset", options.preset);
       } else {
         args.push("-c:v", "copy");
       }
 
       args.push("-c:a", "aac", "-b:a", "128k");
-
-      if (hasSubtitles) {
-        args.push("-c:s", "webvtt");
-      }
 
       // HLS Settings
       args.push(
@@ -284,25 +483,29 @@ export class MediaService {
         "0",
       );
 
-      // If subtitles exist, we use master playlist structure
-      if (hasSubtitles) {
-        args.push("-master_pl_name", masterPlaylist);
-        // Use sgroup to link the video variant to the subtitle group
-        // We include s:0 in the same variant group to ensure ffmpeg handles it correctly as a WebVTT stream associated with this variant
-        args.push("-var_stream_map", "v:0,a:0,s:0,sgroup:subs");
-        
-      // Output variant playlists
-      // Important: this MUST be the last argument for the hls muxer output filename pattern
-      // Because we use var_stream_map, we emit multiple playlists using the pattern.
-      args.push("stream_%v.m3u8");
-      } else {
+      // Check for a compatible subtitle track for HLS fallback (VLC support)
+      const textSubtitleCodecs = ["subrip", "mov_text", "webvtt", "text"];
+      const validHlsSubtitle = analysis.subtitles.find((s) =>
+        textSubtitleCodecs.includes(s.codec),
+      );
 
-        // Simple output
+      // HLS Map logic
+      if (validHlsSubtitle) {
+        // Map the first compatible subtitle track for HLS embedding
+        args.push("-map", `0:${validHlsSubtitle.index}`);
+        args.push("-c:s", "webvtt");
+
+        // Use sgroup to link the video variant to the subtitle group
+        args.push("-master_pl_name", masterPlaylist);
+        args.push("-var_stream_map", "v:0,a:0,s:0,sgroup:subs");
+        args.push("stream_%v.m3u8");
+      } else {
+        // Simple output without subtitles in HLS
         args.push("-hls_segment_filename", "segment_%03d.ts");
-        // If no subtitles, just output directly to masterPlaylist file
-        // This will be a simple media playlist (segments only)
         args.push(masterPlaylist);
       }
+
+      args.push(...sidecarArgs);
 
       logger.info(`Spawning ffmpeg at: ${ffmpegPath}`);
       logger.info(`With cwd: ${outputDir}`);
@@ -312,7 +515,6 @@ export class MediaService {
 
       let stderr = "";
 
-      // Capture all stderr for debugging purposes, not just progress
       process.stderr.on("data", (data) => {
         const chunk = data.toString();
         stderr += chunk;

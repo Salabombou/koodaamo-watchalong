@@ -2,6 +2,7 @@ import type { Configuration } from "webpack";
 
 import { rules } from "./webpack.rules";
 import { plugins } from "./webpack.plugins";
+import path from "path";
 
 rules.push({
   test: /\.css$/,
@@ -19,5 +20,10 @@ export const rendererConfig: Configuration = {
   plugins,
   resolve: {
     extensions: [".js", ".ts", ".jsx", ".tsx", ".css"],
+    alias: {
+      "@shared": path.resolve(__dirname, "src/shared"),
+      "@components": path.resolve(__dirname, "src/renderer/components"),
+      "@routes": path.resolve(__dirname, "src/renderer/routes"),
+    },
   },
 };

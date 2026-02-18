@@ -1,19 +1,16 @@
 import { EventEmitter } from "events";
 import { Buffer } from "buffer";
+import { SyncCommand } from "@shared/types"; // Import from shared types
 
 export const EXTENSION_NAME = "watchalong_sync";
 
 export interface Wire extends EventEmitter {
   peerId: string;
+  remoteAddress?: string; // Add this
+  remotePort?: number; // Add this
   extended: (name: string, data: Buffer) => void;
   use(extension: unknown): void;
   [key: string]: unknown;
-}
-
-export interface SyncCommand {
-  type: "play" | "pause" | "seek" | "chat" | "progress";
-  payload: unknown;
-  timestamp: number;
 }
 
 export class SyncExtension extends EventEmitter {

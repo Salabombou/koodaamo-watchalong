@@ -1,6 +1,6 @@
 import { Server } from "bittorrent-tracker";
 import localtunnel from "localtunnel";
-import logger from "../utilities/logging";
+import logger from "@utilities/logging";
 import { startTunnel } from "untun";
 import { networkInterfaces } from "os";
 
@@ -11,7 +11,9 @@ export class TrackerService {
   private port: number = 0;
   private tunnelUrl: string | null = null;
 
-  async start(type: "lan" | "localtunnel" | "untun" = "localtunnel"): Promise<string> {
+  async start(
+    type: "lan" | "localtunnel" | "untun" = "localtunnel",
+  ): Promise<string> {
     return new Promise((resolve, reject) => {
       try {
         // 1. Start the Bittorrent Tracker Server
@@ -22,7 +24,11 @@ export class TrackerService {
           stats: true,
           // Interval for client announcements (polling frequency)
           interval: 30000,
-          filter: (infoHash: string, params: unknown, cb: (err: Error | null) => void) => {
+          filter: (
+            infoHash: string,
+            params: unknown,
+            cb: (err: Error | null) => void,
+          ) => {
             // Allow tracking for any torrent
             cb(null);
           },
@@ -35,7 +41,7 @@ export class TrackerService {
             this.port = address.port;
           } else {
             // Fallback or error if server not started correctly
-            this.port = 0; 
+            this.port = 0;
           }
           logger.info(`Tracker running locally on port ${this.port}`);
 

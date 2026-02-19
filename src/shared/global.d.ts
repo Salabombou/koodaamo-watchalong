@@ -1,2 +1,2 @@
 declare module "*.css";
-declare module "plyr";
+declare module "@fontsource/space-grotesk";

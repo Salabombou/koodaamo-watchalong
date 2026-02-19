@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import App from "./App";
+import "@fontsource/space-grotesk";
 import "./index.css";
 import "@fortawesome/fontawesome-free/css/all.css";
 

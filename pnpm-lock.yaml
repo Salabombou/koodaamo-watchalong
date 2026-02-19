@@ -13,15 +13,6 @@ importers:
       "@fortawesome/fontawesome-free":
         specifier: ^7.2.0
         version: 7.2.0
-      "@types/localtunnel":
-        specifier: ^2.0.4
-        version: 2.0.4
-      "@types/video.js":
-        specifier: ^7.3.58
-        version: 7.3.58
-      axios:
-        specifier: ^1.13.5
-        version: 1.13.5
       electron-is-dev:
         specifier: ^3.0.1
         version: 3.0.1
@@ -43,9 +34,6 @@ importers:
       hls.js:
         specifier: ^1.6.15
         version: 1.6.15
-      jiti:
-        specifier: ^2.6.1
-        version: 2.6.1
       localtunnel:
         specifier: ^2.0.2
         version: 2.0.2
@@ -107,6 +95,9 @@ importers:
       "@types/fs-extra":
         specifier: ^11.0.4
         version: 11.0.4
+      "@types/localtunnel":
+        specifier: ^2.0.4
+        version: 2.0.4
       "@types/node":
         specifier: ^25.3.0
         version: 25.3.0
@@ -1428,12 +1419,6 @@ packages:
         integrity: sha512-RlDm9K7+o5stv0Co8i8ZRGxDbrTxhJtgjqjFyVh/tXQyl/rYtTKlnTvZ88oSTeYREWurwx20Js4kTuKCsFkUtg==,
       }
 
-  "@types/video.js@7.3.58":
-    resolution:
-      {
-        integrity: sha512-1CQjuSrgbv1/dhmcfQ83eVyYbvGyqhTvb2Opxr0QCV+iJ4J6/J+XWQ3Om59WiwCd1MN3rDUHasx5XRrpUtewYQ==,
-      }
-
   "@types/webtorrent@0.110.1":
     resolution:
       {
@@ -2083,12 +2068,6 @@ packages:
     resolution:
       {
         integrity: sha512-ut5vewkiu8jjGBdqpM44XxjuCjq9LAKeHVmoVfHVzy8eHgxxq8SbAVQNovDA8mVi05kP0Ea/n/UzcSHcTJQfNg==,
-      }
-
-  axios@1.13.5:
-    resolution:
-      {
-        integrity: sha512-cz4ur7Vb0xS4/KUN0tPWe44eqxrIu31me+fbang3ijiNscE129POzipJJA6zniq2C/Z6sJCjMimjS8Lc/GAs8Q==,
       }
 
   b4a@1.7.5:
@@ -7199,12 +7178,6 @@ packages:
       }
     engines: { node: ">= 0.10" }
 
-  proxy-from-env@1.1.0:
-    resolution:
-      {
-        integrity: sha512-D+zkORCbA9f1tdWRK0RaCR3GPv50cMxcrz4X8k5LTSUD1Dkw47mKJEZQNunItRTkWwgtaUSo1RVFRIG9ZXiFYg==,
-      }
-
   pump@3.0.3:
     resolution:
       {
@@ -10363,8 +10336,6 @@ snapshots:
   "@types/verror@1.10.11":
     optional: true
 
-  "@types/video.js@7.3.58": {}
-
   "@types/webtorrent@0.110.1":
     dependencies:
       "@types/bittorrent-protocol": 3.1.7
@@ -10854,14 +10825,6 @@ snapshots:
   axios@0.21.4(debug@4.3.2):
     dependencies:
       follow-redirects: 1.15.11(debug@4.3.2)
-    transitivePeerDependencies:
-      - debug
-
-  axios@1.13.5:
-    dependencies:
-      follow-redirects: 1.15.11
-      form-data: 4.0.5
-      proxy-from-env: 1.1.0
     transitivePeerDependencies:
       - debug
 
@@ -12272,8 +12235,6 @@ snapshots:
       - supports-color
 
   fn.name@1.1.0: {}
-
-  follow-redirects@1.15.11: {}
 
   follow-redirects@1.15.11(debug@4.3.2):
     optionalDependencies:
@@ -14258,8 +14219,6 @@ snapshots:
     dependencies:
       forwarded: 0.2.0
       ipaddr.js: 1.9.1
-
-  proxy-from-env@1.1.0: {}
 
   pump@3.0.3:
     dependencies:

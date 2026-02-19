@@ -1,7 +1,7 @@
 {
   "name": "koodaamo-watchalong",
   "productName": "koodaamo-watchalong",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Salabombou/koodaamo-watchalong.git"
@@ -20,11 +20,16 @@
     "build": "npm run build:main && npm run build:renderer",
     "build:main": "cross-env TS_NODE_PROJECT=tsconfig.build.json webpack --config webpack.build.main.ts",
     "build:renderer": "cross-env TS_NODE_PROJECT=tsconfig.build.json webpack --config webpack.build.renderer.ts",
-    "dist": "npm run build && electron-builder"
+    "dist": "npm run clean && npm run build && electron-builder"
   },
   "build": {
     "appId": "com.salabombou.koodaamo-watchalong",
     "productName": "koodaamo-watchalong",
+    "compression": "maximum",
+    "afterPack": "./scripts/afterPackPrune.js",
+    "electronLanguages": [
+      "en-US"
+    ],
     "directories": {
       "output": "release"
     },
@@ -39,7 +44,7 @@
       ],
       "extraResources": [
         {
-          "from": "node_modules/ffprobe-static/bin/win32/x64/ffprobe.exe",
+          "from": "node_modules/ffprobe-static/bin/win32/${arch}/ffprobe.exe",
           "to": "ffprobe.exe"
         },
         {
@@ -55,7 +60,7 @@
       ],
       "extraResources": [
         {
-          "from": "node_modules/ffprobe-static/bin/darwin/x64/ffprobe",
+          "from": "node_modules/ffprobe-static/bin/darwin/${arch}/ffprobe",
           "to": "ffprobe"
         },
         {
@@ -122,6 +127,7 @@
     "@types/electron-squirrel-startup": "^1.0.2",
     "@types/ffprobe-static": "^2.0.3",
     "@types/fs-extra": "^11.0.4",
+    "@types/localtunnel": "^2.0.4",
     "@types/node": "^25.3.0",
     "@types/range-parser": "^1.2.7",
     "@types/react": "^19.2.14",
@@ -157,9 +163,6 @@
   "dependencies": {
     "@fontsource/space-grotesk": "^5.2.10",
     "@fortawesome/fontawesome-free": "^7.2.0",
-    "@types/localtunnel": "^2.0.4",
-    "@types/video.js": "^7.3.58",
-    "axios": "^1.13.5",
     "electron-is-dev": "^3.0.1",
     "electron-squirrel-startup": "^1.0.1",
     "electron-updater": "^6.8.3",
@@ -167,7 +170,6 @@
     "ffprobe-static": "^3.1.0",
     "fs-extra": "^11.3.3",
     "hls.js": "^1.6.15",
-    "jiti": "^2.6.1",
     "localtunnel": "^2.0.2",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",

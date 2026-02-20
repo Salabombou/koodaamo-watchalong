@@ -1,7 +1,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
 
-const SUPPORTED_PLATFORM_DIRS = new Set(["win32", "darwin", "linux"]);
 const PREBUILD_MODULES = [
   "bufferutil",
   "fs-native-extensions",
@@ -56,32 +55,22 @@ function resolveBinaryNames(platformName) {
   return {
     ffmpeg: isWindows ? "ffmpeg.exe" : "ffmpeg",
     ffprobe: isWindows ? "ffprobe.exe" : "ffprobe",
+    cloudTorrent: isWindows ? "cloud-torrent.exe" : "cloud-torrent",
   };
 }
 
-function pruneFfprobeStatic(nodeModulesRoot, platformName) {
-  const ffprobeBinDirectory = path.join(
-    nodeModulesRoot,
-    "ffprobe-static",
-    "bin",
-  );
+function mapArchName(archName) {
+  if (archName === 1) return "x64";
+  if (archName === 2) return "ia32";
+  if (archName === 3) return "armv7l";
+  if (archName === 4) return "arm64";
 
-  for (const entry of listDirectoryEntries(ffprobeBinDirectory)) {
-    if (!entry.isDirectory()) {
-      continue;
-    }
-
-    if (
-      SUPPORTED_PLATFORM_DIRS.has(entry.name) &&
-      entry.name !== platformName
-    ) {
-      removeDirectoryIfExists(path.join(ffprobeBinDirectory, entry.name));
-    }
-  }
-
-  if (platformName === "win32") {
-    removeDirectoryIfExists(path.join(ffprobeBinDirectory, "win32", "ia32"));
-  }
+  if (archName === "x64") return "x64";
+  if (archName === "arm64") return "arm64";
+  if (archName === "ia32") return "ia32";
+  if (archName === "armv7l") return "armv7l";
+  if (archName === "arm") return "armv7l";
+  return String(archName);
 }
 
 function pruneNativePrebuilds(nodeModulesRoot, platformName) {
@@ -110,44 +99,110 @@ function pruneNativePrebuilds(nodeModulesRoot, platformName) {
   }
 }
 
-function pruneBundledMediaModules(
-  nodeModulesRoot,
-  resourcesRoot,
-  platformName,
-) {
-  const binaryNames = resolveBinaryNames(platformName);
-  const ffmpegResourcePath = path.join(resourcesRoot, binaryNames.ffmpeg);
-  const ffprobeResourcePath = path.join(resourcesRoot, binaryNames.ffprobe);
+function pruneDownloadedMediaResources(resourcesRoot, platformName, archName) {
+  const mediaRoot = path.join(resourcesRoot, "bin");
+  const normalizedArch = mapArchName(archName);
 
-  if (
-    !fs.existsSync(ffmpegResourcePath) ||
-    !fs.existsSync(ffprobeResourcePath)
-  ) {
-    console.warn(
-      "[afterPackPrune] Skipped ffmpeg/ffprobe module pruning: expected resource binaries were not found",
-    );
+  if (!fs.existsSync(mediaRoot)) {
+    console.log("[afterPackPrune] Skipped media resource pruning: resources/bin not found");
     return;
   }
 
-  removeDirectoryIfExists(path.join(nodeModulesRoot, "ffmpeg-static"));
-  removeDirectoryIfExists(path.join(nodeModulesRoot, "ffprobe-static"));
+  for (const platformEntry of listDirectoryEntries(mediaRoot)) {
+    if (!platformEntry.isDirectory()) {
+      continue;
+    }
+
+    if (platformEntry.name !== platformName) {
+      removeDirectoryIfExists(path.join(mediaRoot, platformEntry.name));
+      continue;
+    }
+
+    const platformRoot = path.join(mediaRoot, platformEntry.name);
+    for (const archEntry of listDirectoryEntries(platformRoot)) {
+      if (!archEntry.isDirectory()) {
+        continue;
+      }
+
+      if (archEntry.name !== normalizedArch) {
+        removeDirectoryIfExists(path.join(platformRoot, archEntry.name));
+      }
+    }
+
+    const binaryNames = resolveBinaryNames(platformName);
+    const ffmpegPath = path.join(platformRoot, normalizedArch, binaryNames.ffmpeg);
+    const ffprobePath = path.join(platformRoot, normalizedArch, binaryNames.ffprobe);
+
+    if (!fs.existsSync(ffmpegPath) || !fs.existsSync(ffprobePath)) {
+      console.warn(
+        `[afterPackPrune] Expected ffmpeg/ffprobe binaries not found for ${platformName}/${normalizedArch}`,
+      );
+    }
+  }
+}
+
+function pruneCloudTorrentResources(resourcesRoot, platformName, archName) {
+  const cloudTorrentRoot = path.join(resourcesRoot, "cloud-torrent");
+  const normalizedArch = mapArchName(archName);
+
+  if (!fs.existsSync(cloudTorrentRoot)) {
+    console.log("[afterPackPrune] Skipped cloud-torrent pruning: resource not found");
+    return;
+  }
+
+  for (const platformEntry of listDirectoryEntries(cloudTorrentRoot)) {
+    if (!platformEntry.isDirectory()) {
+      continue;
+    }
+
+    if (platformEntry.name !== platformName) {
+      removeDirectoryIfExists(path.join(cloudTorrentRoot, platformEntry.name));
+      continue;
+    }
+
+    const platformRoot = path.join(cloudTorrentRoot, platformEntry.name);
+    for (const archEntry of listDirectoryEntries(platformRoot)) {
+      if (!archEntry.isDirectory()) {
+        continue;
+      }
+
+      if (archEntry.name !== normalizedArch) {
+        removeDirectoryIfExists(path.join(platformRoot, archEntry.name));
+      }
+    }
+
+    const binaryNames = resolveBinaryNames(platformName);
+    const selectedBinary = path.join(
+      platformRoot,
+      normalizedArch,
+      binaryNames.cloudTorrent,
+    );
+
+    if (!fs.existsSync(selectedBinary)) {
+      console.warn(
+        `[afterPackPrune] Expected cloud-torrent binary not found: ${selectedBinary}`,
+      );
+    }
+  }
 }
 
 module.exports = async function afterPack(context) {
-  const { appOutDir, electronPlatformName } = context;
+  const { appOutDir, electronPlatformName, arch } = context;
   const nodeModulesRoot = resolveNodeModulesRoot(appOutDir);
   const resourcesRoot = resolveResourcesRoot(appOutDir);
 
-  if (!nodeModulesRoot || !resourcesRoot) {
+  if (!resourcesRoot) {
     console.log("[afterPackPrune] Skipped: required app paths not found");
     return;
   }
 
-  pruneFfprobeStatic(nodeModulesRoot, electronPlatformName);
+  pruneCloudTorrentResources(resourcesRoot, electronPlatformName, arch);
+  pruneDownloadedMediaResources(resourcesRoot, electronPlatformName, arch);
+
+  if (!nodeModulesRoot) {
+    console.log("[afterPackPrune] Skipped node_modules pruning: app.asar.unpacked not found");
+    return;
+  }
+
   pruneNativePrebuilds(nodeModulesRoot, electronPlatformName);
-  pruneBundledMediaModules(
-    nodeModulesRoot,
-    resourcesRoot,
-    electronPlatformName,
-  );
 };

@@ -1,7 +1,6 @@
 import WebTorrent from "webtorrent";
 import { TrackerService } from "./TrackerService";
-import { SyncExtension, EXTENSION_NAME } from "@protocols/SyncExtension";
-import type { Wire } from "@protocols/SyncExtension";
+import { CloudTorrentService } from "./CloudTorrentService";
 import { SyncCommand } from "@shared/types";
 import { EventEmitter } from "events";
 import rangeParser from "range-parser";
@@ -9,6 +8,9 @@ import http from "http";
 import path from "path";
 import fs from "fs";
 import type { AddressInfo } from "net";
+import net from "net";
+import { app } from "electron";
+import { WebSocket } from "ws";
 import logger from "@utilities/logging";
 
 export class TorrentService extends EventEmitter {
@@ -19,7 +21,6 @@ export class TorrentService extends EventEmitter {
 
   activeTorrent: WebTorrent.Torrent | null = null;
   isHost: boolean = false;
-  private extensions: Set<SyncExtension> = new Set();
   private peerProgress: Map<string, number> = new Map();
   private lastEmit: number = 0;
   private lastConsoleLog: number = 0;
@@ -27,8 +28,30 @@ export class TorrentService extends EventEmitter {
   private server: http.Server | null = null;
   private streamPort: number = 0;
 
+  private syncSocket: WebSocket | null = null;
+  private syncAccessKey: string | null = null;
+  private cloudTorrentService = new CloudTorrentService();
+  private cloudStreamPath: string = "";
+  private cloudPort: number = 0;
+  private cloudDownloadsPath: string;
+
+  private static readonly PUBLIC_FALLBACK_TRACKERS = [
+    "udp://tracker.opentrackr.org:1337/announce",
+    "udp://tracker.torrent.eu.org:451/announce",
+    "udp://open.stealth.si:80/announce",
+    "https://tracker.opentrackr.org:443/announce",
+  ];
+
+  private static readonly TELEMETRY_PREFIX = "[telemetry]";
+
   constructor() {
     super();
+    this.cloudDownloadsPath = path.join(
+      app.getPath("userData"),
+      "cloud-torrent",
+      `instance-${process.pid}`,
+    );
+    fs.mkdirSync(this.cloudDownloadsPath, { recursive: true });
     this.clientReady = this.initClient();
     this.clientReady.catch((err) => {
       logger.error("Failed to initialize WebTorrent client:", err);
@@ -38,7 +61,6 @@ export class TorrentService extends EventEmitter {
 
   private startServer() {
     this.server = http.createServer((req, res) => {
-      // Add CORS headers
       res.setHeader("Access-Control-Allow-Origin", "*");
       res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
       res.setHeader("Access-Control-Allow-Headers", "Range");
@@ -61,10 +83,96 @@ export class TorrentService extends EventEmitter {
     });
   }
 
+  private async reserveCloudPort() {
+    if (this.cloudPort > 0) {
+      return this.cloudPort;
+    }
+
+    this.cloudPort = await new Promise<number>((resolve, reject) => {
+      const server = net.createServer();
+      server.on("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address();
+        if (!address || typeof address === "string") {
+          server.close();
+          reject(new Error("Failed to allocate cloud-torrent port"));
+          return;
+        }
+
+        const allocatedPort = address.port;
+        server.close(() => resolve(allocatedPort));
+      });
+    });
+
+    return this.cloudPort;
+  }
+
+  private async ensureCloudStarted() {
+    const port = await this.reserveCloudPort();
+    await this.cloudTorrentService.start({
+      port,
+      downloadsPath: this.cloudDownloadsPath,
+    });
+  }
+
+  private resolvePreferredStreamPath(torrent: WebTorrent.Torrent) {
+    const normalizeCloudPath = (filePath: string) => {
+      const normalized = filePath.replace(/\\/g, "/").replace(/^\/+/, "");
+      if (normalized.includes("/")) {
+        return normalized;
+      }
+
+      const infoHash = torrent.infoHash?.trim();
+      if (!infoHash) {
+        return normalized;
+      }
+
+      return `${infoHash}/${normalized}`;
+    };
+
+    const preferred = torrent.files.find((file) => file.path.endsWith("master.m3u8"));
+    if (preferred) {
+      return normalizeCloudPath(preferred.path);
+    }
+
+    const fallbackPlaylist = torrent.files.find((file) => file.path.endsWith(".m3u8"));
+    if (fallbackPlaylist) {
+      return normalizeCloudPath(fallbackPlaylist.path);
+    }
+
+    const fallbackVideo = torrent.files.find((file) =>
+      /\.(mp4|webm|mkv|avi)$/i.test(file.path),
+    );
+    return fallbackVideo ? normalizeCloudPath(fallbackVideo.path) : "";
+  }
+
+  private async setupCloudStreamForTorrent(
+    magnetUri: string,
+    torrent: WebTorrent.Torrent,
+  ) {
+    try {
+      await this.ensureCloudStarted();
+      await this.cloudTorrentService.addMagnet(magnetUri);
+      this.cloudStreamPath = this.resolvePreferredStreamPath(torrent);
+    } catch (error) {
+      logger.warn(
+        `Failed to initialize cloud-torrent streaming: ${this.toErrorMessage(error)}`,
+      );
+    }
+  }
+
   private handleHttpCallback(
     req: http.IncomingMessage,
     res: http.ServerResponse,
   ) {
+    const requestUrl = req.url || "/";
+    const normalizedPath = decodeURIComponent(requestUrl.split("?")[0]);
+
+    if (normalizedPath.startsWith("/cloud/")) {
+      void this.proxyCloudRequest(req, res, normalizedPath);
+      return;
+    }
+
     if (!this.activeTorrent || !this.activeTorrent.ready) {
       res.statusCode = 503;
       res.end("Torrent not ready");
@@ -75,18 +183,15 @@ export class TorrentService extends EventEmitter {
     const cleanUrl = decodeURIComponent(url.split("?")[0]);
     let targetPath = cleanUrl;
 
-    // Remove /stream/ prefix if present
     if (targetPath.startsWith("/stream/")) {
       targetPath = targetPath.slice("/stream/".length);
     } else if (targetPath === "/stream") {
       targetPath = "";
     }
 
-    // Find file based on request path
     let file: WebTorrent.TorrentFile | undefined;
 
     if (targetPath === "" || targetPath === "/") {
-      // Default: prioritize m3u8, then video
       file = this.activeTorrent.files.find((f) => f.name.endsWith(".m3u8"));
       if (!file) {
         file = this.activeTorrent.files.find((f) =>
@@ -94,7 +199,6 @@ export class TorrentService extends EventEmitter {
         );
       }
     } else {
-      // Match exact filename or path ending with request
       file = this.activeTorrent.files.find((f) => {
         return f.name === targetPath || f.path.endsWith(targetPath);
       });
@@ -108,10 +212,8 @@ export class TorrentService extends EventEmitter {
 
     file.select();
 
-    // Determine Absolute Path on Disk
     const absPath = path.join(this.activeTorrent.path, file.path);
 
-    // Check if file exists on disk
     if (!fs.existsSync(absPath)) {
       res.statusCode = 404;
       res.end("File not yet downloaded or missing");
@@ -121,7 +223,6 @@ export class TorrentService extends EventEmitter {
     const stat = fs.statSync(absPath);
     const fileSize = stat.size;
 
-    // Determine Content-Type
     let contentType = "application/octet-stream";
     if (file.name.endsWith(".m3u8"))
       contentType = "application/vnd.apple.mpegurl";
@@ -130,7 +231,6 @@ export class TorrentService extends EventEmitter {
     else if (file.name.endsWith(".webm")) contentType = "video/webm";
     else if (file.name.endsWith(".vtt")) contentType = "text/vtt";
 
-    // Handle Range Requests
     const rangeHeader = req.headers.range;
 
     if (!rangeHeader) {
@@ -176,12 +276,77 @@ export class TorrentService extends EventEmitter {
     });
   }
 
+  private async proxyCloudRequest(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    normalizedPath: string,
+  ) {
+    const targetPath = normalizedPath.slice("/cloud/".length);
+    if (!targetPath) {
+      res.statusCode = 404;
+      res.end("Cloud path missing");
+      return;
+    }
+
+    const encodedPath = targetPath
+      .split("/")
+      .map((segment) => encodeURIComponent(segment))
+      .join("/");
+    const query = req.url?.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
+    const targetUrl = `${this.cloudTorrentService.getDownloadUrl(encodedPath)}${query}`;
+
+    try {
+      const headers: Record<string, string> = {};
+      if (req.headers.range) {
+        headers.Range = req.headers.range;
+      }
+      headers["Accept-Encoding"] = "identity";
+
+      const upstreamResponse = await fetch(targetUrl, {
+        method: req.method || "GET",
+        headers,
+      });
+
+      res.statusCode = upstreamResponse.status;
+      for (const [header, value] of upstreamResponse.headers.entries()) {
+        const lowerHeader = header.toLowerCase();
+        if (
+          lowerHeader === "transfer-encoding" ||
+          lowerHeader === "content-encoding" ||
+          lowerHeader === "content-length" ||
+          lowerHeader === "connection"
+        ) {
+          continue;
+        }
+        res.setHeader(header, value);
+      }
+
+      const bodyBuffer = Buffer.from(await upstreamResponse.arrayBuffer());
+      res.setHeader("Content-Length", bodyBuffer.length);
+      res.end(bodyBuffer);
+    } catch (error) {
+      logger.error(
+        `Cloud proxy error for ${targetUrl}: ${this.toErrorMessage(error)}`,
+      );
+      if (!res.headersSent) {
+        res.statusCode = 502;
+      }
+      res.end("Unable to proxy cloud stream");
+    }
+  }
+
   private async initClient() {
     logger.info("Initializing WebTorrent client...");
     logger.info(
       `Using webtorrent (${WebTorrent.WEBRTC_SUPPORT ? "WebRTC" : "TCP/UDP"})`,
     );
     this.client = new WebTorrent({
+      utp: true,
+      dht: true,
+      tracker: true,
+    });
+    this.logTelemetry("client_runtime", {
+      webrtcSupport: WebTorrent.WEBRTC_SUPPORT,
       utp: true,
       dht: true,
       tracker: true,
@@ -200,18 +365,231 @@ export class TorrentService extends EventEmitter {
     return this.client!;
   }
 
+  private toErrorMessage(error: unknown): string {
+    if (error instanceof Error) return error.message;
+    return String(error);
+  }
+
+  private createTraceId(): string {
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  private logTelemetry(event: string, fields: Record<string, unknown>) {
+    logger.info(
+      `${TorrentService.TELEMETRY_PREFIX} ${JSON.stringify({ event, ...fields })}`,
+    );
+  }
+
+  private extractTrackersFromMagnet(magnetURI: string): string[] {
+    const queryIndex = magnetURI.indexOf("?");
+    if (queryIndex === -1) return [];
+
+    const query = magnetURI.slice(queryIndex + 1);
+    const params = new URLSearchParams(query);
+    const trackers = params.getAll("tr").map((value) => value.trim());
+
+    return Array.from(new Set(trackers.filter(Boolean)));
+  }
+
+  private getTrackerAttemptOrder(
+    preferred: "lan" | "localtunnel" | "untun",
+  ): Array<"lan" | "localtunnel" | "untun"> {
+    if (preferred === "lan") return ["lan"];
+    if (preferred === "untun") return ["untun", "localtunnel"];
+    return ["localtunnel", "untun"];
+  }
+
+  private async startTrackerWithFallback(
+    preferred: "lan" | "localtunnel" | "untun",
+    traceId: string,
+  ): Promise<{ announceUrl: string; mode: "lan" | "localtunnel" | "untun" }> {
+    const attemptOrder = this.getTrackerAttemptOrder(preferred);
+    const attemptErrors: string[] = [];
+
+    this.logTelemetry("tracker_attempt_order", {
+      traceId,
+      preferred,
+      order: attemptOrder,
+    });
+
+    for (const mode of attemptOrder) {
+      const startedAt = Date.now();
+      this.trackerService.stop();
+
+      try {
+        const announceUrl = await this.trackerService.start(mode);
+        this.logTelemetry("tracker_start_success", {
+          traceId,
+          preferred,
+          mode,
+          durationMs: Date.now() - startedAt,
+          announceUrl,
+        });
+        return { announceUrl, mode };
+      } catch (error) {
+        const message = this.toErrorMessage(error);
+        const durationMs = Date.now() - startedAt;
+        attemptErrors.push(`${mode}: ${message}`);
+        this.logTelemetry("tracker_start_failure", {
+          traceId,
+          preferred,
+          mode,
+          durationMs,
+          error: message,
+        });
+        logger.warn(`Tracker start failed for ${mode}: ${message}`);
+        this.trackerService.stop();
+      }
+    }
+
+    throw new Error(
+      `Unable to start tracker after ${attemptOrder.length} attempt(s): ${attemptErrors.join(" | ")}`,
+    );
+  }
+
+  private buildAnnounceList(
+    trackerType: "lan" | "localtunnel" | "untun",
+    primaryTracker: string,
+  ): string[] {
+    const trackers = [primaryTracker];
+
+    if (trackerType !== "lan") {
+      trackers.push(...TorrentService.PUBLIC_FALLBACK_TRACKERS);
+    }
+
+    return Array.from(
+      new Set(trackers.map((url) => url.trim()).filter(Boolean)),
+    );
+  }
+
+  private appendMagnetParam(magnetUri: string, key: string, value: string) {
+    const separator = magnetUri.includes("?") ? "&" : "?";
+    return `${magnetUri}${separator}${encodeURIComponent(key)}=${encodeURIComponent(value)}`;
+  }
+
+  private extractMagnetParam(magnetUri: string, key: string) {
+    const queryIndex = magnetUri.indexOf("?");
+    if (queryIndex === -1) {
+      return "";
+    }
+
+    const params = new URLSearchParams(magnetUri.slice(queryIndex + 1));
+    return params.get(key) || "";
+  }
+
+  private closeSyncSocket() {
+    if (!this.syncSocket) {
+      return;
+    }
+
+    try {
+      this.syncSocket.close();
+    } catch {
+      // ignore close errors
+    }
+
+    this.syncSocket = null;
+  }
+
+  private attachSyncSocketHandlers() {
+    if (!this.syncSocket) {
+      return;
+    }
+
+    this.syncSocket.on("message", (payload) => {
+      try {
+        const command = JSON.parse(payload.toString("utf-8")) as SyncCommand;
+        if (
+          this.isHost &&
+          command.type === "progress" &&
+          command.payload &&
+          typeof command.payload === "object"
+        ) {
+          const payloadObject = command.payload as {
+            peerId?: string;
+            percent?: number;
+          };
+
+          if (
+            payloadObject.peerId &&
+            typeof payloadObject.percent === "number" &&
+            Number.isFinite(payloadObject.percent)
+          ) {
+            this.peerProgress.set(payloadObject.peerId, payloadObject.percent);
+            this.emitProgress();
+          }
+        }
+
+        this.emit("sync-command", command);
+      } catch (error) {
+        logger.warn(`Invalid sync command payload: ${this.toErrorMessage(error)}`);
+      }
+    });
+
+    this.syncSocket.on("close", () => {
+      logger.info("Sync socket disconnected");
+      this.syncSocket = null;
+    });
+
+    this.syncSocket.on("error", (error) => {
+      logger.error("Sync socket error", error);
+      this.emit("error", error);
+    });
+  }
+
+  private connectSyncSocket(syncUrl: string) {
+    this.closeSyncSocket();
+
+    logger.info(`Connecting sync socket: ${syncUrl}`);
+    this.syncSocket = new WebSocket(syncUrl);
+
+    this.syncSocket.on("open", () => {
+      logger.info("Sync socket connected");
+    });
+
+    this.attachSyncSocketHandlers();
+  }
+
+  private buildRemoteSyncUrlFromMagnet(
+    magnetURI: string,
+    infoHash: string,
+    accessKey: string,
+  ) {
+    const trackers = this.extractTrackersFromMagnet(magnetURI);
+    const announceUrl = trackers.find((tracker) =>
+      /^https?:\/\//i.test(tracker),
+    );
+
+    if (!announceUrl) {
+      return "";
+    }
+
+    return this.trackerService.toRemoteSyncUrl(
+      announceUrl,
+      infoHash,
+      accessKey,
+      "peer",
+    );
+  }
+
   async seed(
     filePath: string,
     trackerType: "lan" | "localtunnel" | "untun" = "localtunnel",
   ): Promise<string> {
     const client = await this.clientReady;
+    const traceId = this.createTraceId();
+
+    this.logTelemetry("seed_start", {
+      traceId,
+      trackerType,
+      filePath,
+    });
+
     logger.info(
       `Starting seed for: ${filePath} with tracker type: ${trackerType}`,
     );
 
     let seedPath = filePath;
-    // For HLS playlists (.m3u8), we must seed the parent directory
-    // so peer can fetch .ts segments
     if (filePath.endsWith(".m3u8")) {
       seedPath = path.dirname(filePath);
       logger.info(`Detected HLS playlist. Seeding directory: ${seedPath}`);
@@ -219,129 +597,175 @@ export class TorrentService extends EventEmitter {
 
     const startTime = Date.now();
 
-    // Start local tracker
     let localTrackerUrl = "";
+    let resolvedTrackerType: "lan" | "localtunnel" | "untun" = trackerType;
     try {
       logger.info("Starting tracker service...");
-      this.trackerService.stop();
-      localTrackerUrl = await this.trackerService.start(trackerType);
-      logger.info(`Tracker service started at ${localTrackerUrl}`);
+      const trackerStart = await this.startTrackerWithFallback(
+        trackerType,
+        traceId,
+      );
+      localTrackerUrl = trackerStart.announceUrl;
+      resolvedTrackerType = trackerStart.mode;
+      logger.info(
+        `Tracker service started at ${localTrackerUrl} (resolved mode: ${resolvedTrackerType})`,
+      );
     } catch (err) {
       logger.error("Failed to start tracker service", err);
+      this.logTelemetry("seed_tracker_unavailable", {
+        traceId,
+        trackerType,
+        error: this.toErrorMessage(err),
+      });
+      throw new Error(
+        `Unable to start tracker for ${trackerType}: ${this.toErrorMessage(err)}`,
+      );
     }
 
-    return new Promise((resolve) => {
-      //if (this.activeTorrent) this.cleanup();
+    this.syncAccessKey = this.trackerService.rotateSyncAccessKey();
 
-      const t = client.seed(
+    const announce = this.buildAnnounceList(
+      resolvedTrackerType,
+      localTrackerUrl,
+    );
+    if (announce.length === 0) {
+      throw new Error("No valid trackers available for this session");
+    }
+
+    this.logTelemetry("seed_trackers_selected", {
+      traceId,
+      trackerType,
+      resolvedTrackerType,
+      announce,
+    });
+
+    return new Promise((resolve, reject) => {
+      let settled = false;
+
+      const torrentHandle = client.seed(
         seedPath,
-        { announce: [localTrackerUrl] },
+        { announce },
         (torrent: WebTorrent.Torrent) => {
-          logger.info(
-            `Torrent creation complete! Took ${(Date.now() - startTime) / 1000}s`,
-          );
-          logger.info(`Magnet URI: ${torrent.magnetURI}`);
           this.handleTorrent(torrent);
           this.isHost = true;
-          resolve(torrent.magnetURI);
+
+          const baseMagnet = torrent.magnetURI;
+          const magnetWithSync = this.syncAccessKey
+            ? this.appendMagnetParam(
+                baseMagnet,
+                "x-watchalong-key",
+                this.syncAccessKey,
+              )
+            : baseMagnet;
+
+          if (this.syncAccessKey) {
+            const hostSyncUrl = this.trackerService.getLocalSyncUrl(
+              torrent.infoHash,
+              this.syncAccessKey,
+              "host",
+            );
+            this.connectSyncSocket(hostSyncUrl);
+          }
+
+          void this.setupCloudStreamForTorrent(baseMagnet, torrent);
+
+          settled = true;
+          resolve(magnetWithSync);
         },
       );
 
-      t.on("infoHash", () => {
-        logger.info(
-          `InfoHash generated: ${t.infoHash} (Took ${(Date.now() - startTime) / 1000}s)`,
-        );
-      });
-
-      t.on("metadata", () => {
-        logger.info(
-          `Metadata ready (Took ${(Date.now() - startTime) / 1000}s)`,
-        );
-      });
-
-      t.on("warning", (err: unknown) => {
+      torrentHandle.on("warning", (err: unknown) => {
         logger.warn("Warning during seed:", err);
       });
 
-      t.on("error", (err: unknown) => {
+      torrentHandle.on("error", (err: unknown) => {
         logger.error("Error during seed:", err);
+        if (!settled) {
+          settled = true;
+          reject(
+            err instanceof Error ? err : new Error(this.toErrorMessage(err)),
+          );
+        }
+      });
+
+      torrentHandle.on("metadata", () => {
+        this.logTelemetry("seed_metadata", {
+          traceId,
+          trackerType,
+          resolvedTrackerType,
+          durationMs: Date.now() - startTime,
+        });
       });
     });
   }
 
   async add(magnetURI: string): Promise<string> {
     const client = await this.clientReady;
-    //if (this.activeTorrent) this.cleanup();
+    const traceId = this.createTraceId();
+    const startedAt = Date.now();
+
+    this.logTelemetry("add_start", {
+      traceId,
+      magnetLength: magnetURI.length,
+    });
+
+    this.closeSyncSocket();
 
     const torrent = client.add(magnetURI);
 
-    // Handle torrent immediately to ensure wire extensions are registered
-    // before the metadata is fully fetched (so the initial handshake includes the extension)
     this.handleTorrent(torrent);
     this.isHost = false;
+    this.syncAccessKey = this.extractMagnetParam(magnetURI, "x-watchalong-key");
 
     return new Promise((resolve) => {
       torrent.on("infoHash", () => {
+        this.logTelemetry("add_infohash", {
+          traceId,
+          infoHash: torrent.infoHash,
+          durationMs: Date.now() - startedAt,
+        });
+
+        if (this.syncAccessKey) {
+          const peerSyncUrl = this.buildRemoteSyncUrlFromMagnet(
+            magnetURI,
+            torrent.infoHash,
+            this.syncAccessKey,
+          );
+
+          if (peerSyncUrl) {
+            this.connectSyncSocket(peerSyncUrl);
+          }
+        }
+
+        void this.setupCloudStreamForTorrent(magnetURI, torrent);
+
         resolve(torrent.infoHash);
       });
-      // Fallback if infoHash is already there? (unlikely for magnet)
-      if (torrent.infoHash) resolve(torrent.infoHash);
+
+      torrent.on("warning", (err: unknown) => {
+        this.logTelemetry("add_warning", {
+          traceId,
+          warning: this.toErrorMessage(err),
+        });
+      });
+
+      torrent.on("error", (err: unknown) => {
+        this.logTelemetry("add_error", {
+          traceId,
+          error: this.toErrorMessage(err),
+        });
+      });
+
+      if (torrent.infoHash) {
+        resolve(torrent.infoHash);
+      }
     });
   }
 
   private handleTorrent(torrent: WebTorrent.Torrent) {
     this.activeTorrent = torrent;
-    this.extensions.clear();
     this.peerProgress.clear();
     this.lastEmit = 0;
-
-    // Register Extension using a class wrapper to satisfy bittorrent-protocol
-    // eslint-disable-next-line @typescript-eslint/no-this-alias
-    const self = this;
-    class EXT extends SyncExtension {
-      constructor(wire: Wire) {
-        super(wire);
-        self.extensions.add(this);
-        this.on("command", (cmd: SyncCommand) => {
-          if (cmd.type === "progress") {
-            const payload = cmd.payload as { percent: number };
-            self.peerProgress.set(wire.peerId, payload.percent);
-            self.emitProgress();
-          } else {
-            self.emit("sync-command", cmd);
-          }
-        });
-        wire.on("close", () => {
-          self.extensions.delete(this);
-          self.peerProgress.delete(wire.peerId);
-          self.emitProgress();
-        });
-      }
-    }
-    EXT.prototype.name = EXTENSION_NAME;
-
-    // Register for new wires
-    torrent.on("wire", (wire: Wire) => {
-      const remote = `${wire.remoteAddress}:${wire.remotePort}`;
-      logger.info(`New wire connected: ${wire.peerId} (${remote})`);
-      wire.use(EXT);
-
-      wire.on("close", () => {
-        logger.info(`Wire disconnected: ${wire.peerId}`);
-      });
-    });
-
-    if (torrent.wires) {
-      torrent.wires.forEach((wire: Wire) => {
-        const remote = `${wire.remoteAddress}:${wire.remotePort}`;
-        logger.info(`Attaching to existing wire: ${wire.peerId} (${remote})`);
-        wire.use(EXT);
-
-        wire.on("close", () => {
-          logger.info(`Wire disconnected: ${wire.peerId}`);
-        });
-      });
-    }
 
     torrent.on("done", () => {
       logger.info("Torrent download/seed complete");
@@ -350,125 +774,23 @@ export class TorrentService extends EventEmitter {
     });
 
     const onProgress = () => this.emitProgress();
-
     torrent.on("download", onProgress);
     torrent.on("upload", onProgress);
 
-    // Emit initial status
     this.emitProgress(true);
   }
 
   getStreamUrl(): string {
+    if (this.cloudStreamPath) {
+      const encodedPath = this.cloudStreamPath
+        .split("/")
+        .map((segment) => encodeURIComponent(segment))
+        .join("/");
+      return `http://127.0.0.1:${this.streamPort}/cloud/${encodedPath}`;
+    }
+
     if (this.streamPort === 0) return "";
     return `http://127.0.0.1:${this.streamPort}/stream/master.m3u8`;
-  }
-
-  private async waitForReady(torrent: WebTorrent.Torrent) {
-    if (torrent.ready) return;
-    await new Promise<void>((resolve) => {
-      torrent.once("ready", () => resolve());
-    });
-  }
-
-  async handleStreamRequest(request: Request): Promise<Response> {
-    if (!this.activeTorrent) {
-      return new Response("No active torrent", { status: 404 });
-    }
-
-    await this.waitForReady(this.activeTorrent);
-
-    if (!this.activeTorrent || !this.activeTorrent.ready) {
-      return new Response("Torrent not ready", { status: 503 });
-    }
-
-    const file = this.activeTorrent.files.find(
-      (f: WebTorrent.TorrentFile) =>
-        f.name.endsWith(".mp4") ||
-        f.name.endsWith(".webm") ||
-        f.name.endsWith(".mkv") ||
-        f.name.endsWith(".avi"),
-    );
-    if (!file) {
-      return new Response("No video file found", { status: 404 });
-    }
-
-    const rangeHeader = request.headers.get("Range");
-
-    if (!rangeHeader) {
-      const stream = file.createReadStream();
-      const readable = new ReadableStream({
-        start(controller) {
-          stream.on("data", (chunk: unknown) => {
-            try {
-              controller.enqueue(chunk);
-            } catch (_e) {
-              (stream as unknown as { destroy: () => void }).destroy();
-            }
-          });
-          stream.on("end", () => {
-            try {
-              controller.close();
-            } catch (_e) {
-              /* ignore */
-            }
-          });
-          stream.on("error", (err: unknown) => controller.error(err));
-        },
-        cancel() {
-          (stream as unknown as { destroy: () => void }).destroy();
-        },
-      });
-
-      return new Response(readable as unknown as BodyInit, {
-        headers: {
-          "Content-Length": file.length.toString(),
-          "Content-Type": "video/mp4",
-          "Accept-Ranges": "bytes",
-        },
-      });
-    }
-
-    const parts = rangeParser(file.length, rangeHeader);
-
-    if (parts === -1 || parts === -2) {
-      return new Response(null, { status: 416 });
-    }
-
-    const { start, end } = parts[0];
-
-    const stream = file.createReadStream({ start, end });
-    const readable = new ReadableStream({
-      start(controller) {
-        stream.on("data", (chunk: unknown) => {
-          try {
-            controller.enqueue(chunk);
-          } catch (_e) {
-            (stream as unknown as { destroy: () => void }).destroy();
-          }
-        });
-        stream.on("end", () => {
-          try {
-            controller.close();
-          } catch (_e) {
-            /* ignore */
-          }
-        });
-        stream.on("error", (err: unknown) => controller.error(err));
-      },
-      cancel() {
-        (stream as unknown as { destroy: () => void }).destroy();
-      },
-    });
-
-    return new Response(readable as unknown as BodyInit, {
-      status: 206,
-      headers: {
-        "Content-Range": `bytes ${start}-${end}/${file.length}`,
-        "Content-Length": (end - start + 1).toString(),
-        "Content-Type": "video/mp4",
-        "Accept-Ranges": "bytes",
-      },
-    });
   }
 
   private emitProgress(force = false) {
@@ -476,7 +798,6 @@ export class TorrentService extends EventEmitter {
 
     const now = Date.now();
 
-    // Verbose logging every 3s
     if (now - this.lastConsoleLog > 3000) {
       this.lastConsoleLog = now;
       const role = this.isHost ? "Host/Seeder" : "Peer/Leecher";
@@ -506,33 +827,35 @@ export class TorrentService extends EventEmitter {
   }
 
   broadcast(command: SyncCommand) {
-    if (this.extensions.size === 0) {
-      logger.warn("No peers to broadcast to");
+    if (!this.syncSocket || this.syncSocket.readyState !== WebSocket.OPEN) {
+      logger.warn("No sync socket connected");
+      return;
     }
-    logger.info(
-      `Broadcasting ${command.type} to ${this.extensions.size} peers`,
-    );
-    this.extensions.forEach((ext) => ext.send(command));
+
+    this.syncSocket.send(JSON.stringify(command));
   }
 
-  /*cleanup() {
-    if (this.mappedPort && this.natClient) {
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (this.natClient as any).unmapAll(this.mappedPort, { protocol: "TCP" });
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (this.natClient as any).unmapAll(this.mappedPort, { protocol: "UDP" });
-        logger.info(`[NAT] Released port ${this.mappedPort}`);
-      } catch (_e) {
-      }
-      this.mappedPort = null;
-      this.natClient = null;
+  async shutdown() {
+    this.closeSyncSocket();
+    this.trackerService.stop();
+
+    if (this.server) {
+      this.server.close();
+      this.server = null;
+      this.streamPort = 0;
     }
 
     if (this.activeTorrent) {
       this.activeTorrent.destroy();
       this.activeTorrent = null;
     }
-    this.extensions.clear();
-  }*/
+
+    if (this.client) {
+      this.client.destroy();
+      this.client = undefined;
+    }
+
+    await this.cloudTorrentService.stop();
+    this.cloudStreamPath = "";
+  }
 }

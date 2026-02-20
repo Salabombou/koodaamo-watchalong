@@ -134,24 +134,8 @@ app.whenReady().then(() => {
   logger.info("App Ready event fired.");
 
   // Register protocol
-  protocol.handle("stream", (req) => {
-    // We access private method here, but we're in index.ts and torrentService is instantiated here.
-    // Ideally TorrentService should expose public handleStreamRequest.
-    // Assuming it does (based on previous code).
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (torrentService as any).handleHttpCallback
-      ? // Wait, handleHttpCallback was private in my read.
-        // But handleStreamRequest was called in original index.ts.
-        // I should assume it works or fix TorrentService to expose it.
-        // Let's assume handleStreamRequest is available as it was in original index.ts
-        // Actually, in snippet of TorrentService I didn't see handleStreamRequest. I saw handleHttpCallback (private).
-        // But original index.ts lines 80-82: `return torrentService.handleStreamRequest(req);`
-        // So it likely exists but I missed it or it's added via prototype/mixin?
-        // Or I missed it in reading.
-        // I'll trust original index.ts.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (torrentService as any).handleStreamRequest(req)
-      : new Response("Not implemented", { status: 501 });
+  protocol.handle("stream", () => {
+    return new Response("Stream protocol is disabled", { status: 410 });
   });
 
   storageService = new StorageService(app.getPath("userData"));
@@ -173,7 +157,12 @@ app.whenReady().then(() => {
 
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") {
+      void torrentService.shutdown();
       app.quit();
     }
+  });
+
+  app.on("before-quit", () => {
+    void torrentService.shutdown();
   });
 });

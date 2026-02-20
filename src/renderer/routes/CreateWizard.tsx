@@ -291,7 +291,9 @@ export default function CreateWizard() {
       navigate(`/dashboard?magnet=${encodeURIComponent(magnet)}&host=true`);
     } catch (e) {
       console.error(e);
-      alert("Failed to create room");
+      const message =
+        e instanceof Error && e.message ? e.message : "Failed to create room";
+      alert(message);
       setCreating(false);
     }
   };

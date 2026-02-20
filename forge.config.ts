@@ -5,11 +5,14 @@ import { WebpackPlugin } from "@electron-forge/plugin-webpack";
 import { mainConfig } from "./webpack.main.config";
 import { rendererConfig } from "./webpack.renderer.config";
 
-import { createRequire } from "module";
+import path from "path";
 
-const require = createRequire(import.meta.url);
-const ffmpegPath = require("ffmpeg-static");
-const ffprobePath = require("ffprobe-static").path;
+const cloudTorrentResourcesPath = path.join(
+  process.cwd(),
+  "resources",
+  "cloud-torrent",
+);
+const mediaResourcesPath = path.join(process.cwd(), "resources", "bin");
 
 const DEV_CONTENT_SECURITY_POLICY =
   "default-src 'self'; " +
@@ -30,7 +33,7 @@ const DEV_CONTENT_SECURITY_POLICY =
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
-    extraResource: [ffmpegPath, ffprobePath],
+    extraResource: [mediaResourcesPath, cloudTorrentResourcesPath],
   },
   rebuildConfig: {},
   plugins: [

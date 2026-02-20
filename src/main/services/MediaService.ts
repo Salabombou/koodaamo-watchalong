@@ -1,6 +1,5 @@
 import { spawn } from "child_process";
 import { app } from "electron";
-import { createRequire } from "module";
 import * as path from "path";
 import * as fs from "fs";
 
@@ -13,6 +12,14 @@ import {
 
 let ffmpegPath: string;
 let ffprobePath: string;
+function mapArch(arch: NodeJS.Architecture): string {
+  if (arch === "x64") return "x64";
+  if (arch === "arm64") return "arm64";
+  if (arch === "ia32") return "ia32";
+  if (arch === "arm") return "armv7l";
+  return arch;
+}
+
 if (app.isPackaged) {
   // In packaged app, binaries are in resources
   const resourcesPath = process.resourcesPath;
@@ -21,9 +28,18 @@ if (app.isPackaged) {
   ffmpegPath = path.join(resourcesPath, `ffmpeg${exe}`);
   ffprobePath = path.join(resourcesPath, `ffprobe${exe}`);
 } else {
-  const requireFunc = createRequire(import.meta.url);
-  ffmpegPath = requireFunc("ffmpeg-static");
-  ffprobePath = requireFunc("ffprobe-static").path;
+  const arch = mapArch(process.arch);
+  const isWindows = process.platform === "win32";
+  const exe = isWindows ? ".exe" : "";
+  const base = path.join(
+    process.cwd(),
+    "resources",
+    "bin",
+    process.platform,
+    arch,
+  );
+  ffmpegPath = path.join(base, `ffmpeg${exe}`);
+  ffprobePath = path.join(base, `ffprobe${exe}`);
 }
 
 export class MediaService {

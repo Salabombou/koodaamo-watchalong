@@ -27,6 +27,16 @@ export class TorrentService extends EventEmitter {
   private server: http.Server | null = null;
   private streamPort: number = 0;
 
+  private static readonly PUBLIC_FALLBACK_TRACKERS = [
+    "udp://tracker.opentrackr.org:1337/announce",
+    "udp://tracker.torrent.eu.org:451/announce",
+    "udp://open.stealth.si:80/announce",
+    "https://tracker.opentrackr.org:443/announce",
+  ];
+
+  private static readonly TELEMETRY_PREFIX = "[telemetry]";
+  private static readonly PEER_WAIT_TIMEOUT_MS = 30000;
+
   constructor() {
     super();
     this.clientReady = this.initClient();
@@ -200,11 +210,109 @@ export class TorrentService extends EventEmitter {
     return this.client!;
   }
 
+  private toErrorMessage(error: unknown): string {
+    if (error instanceof Error) return error.message;
+    return String(error);
+  }
+
+  private createTraceId(): string {
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  private logTelemetry(event: string, fields: Record<string, unknown>) {
+    logger.info(
+      `${TorrentService.TELEMETRY_PREFIX} ${JSON.stringify({ event, ...fields })}`,
+    );
+  }
+
+  private getTrackerAttemptOrder(
+    preferred: "lan" | "localtunnel" | "untun",
+  ): Array<"lan" | "localtunnel" | "untun"> {
+    if (preferred === "lan") return ["lan"];
+    if (preferred === "untun") return ["untun", "localtunnel"];
+    return ["localtunnel", "untun"];
+  }
+
+  private async startTrackerWithFallback(
+    preferred: "lan" | "localtunnel" | "untun",
+    traceId: string,
+  ): Promise<{ announceUrl: string; mode: "lan" | "localtunnel" | "untun" }> {
+    const attemptOrder = this.getTrackerAttemptOrder(preferred);
+    const attemptErrors: string[] = [];
+
+    this.logTelemetry("tracker_attempt_order", {
+      traceId,
+      preferred,
+      order: attemptOrder,
+    });
+
+    for (const mode of attemptOrder) {
+      const startedAt = Date.now();
+      this.trackerService.stop();
+
+      try {
+        const announceUrl = await this.trackerService.start(mode);
+        this.logTelemetry("tracker_start_success", {
+          traceId,
+          preferred,
+          mode,
+          durationMs: Date.now() - startedAt,
+          announceUrl,
+        });
+        return { announceUrl, mode };
+      } catch (error) {
+        const message = this.toErrorMessage(error);
+        const durationMs = Date.now() - startedAt;
+        attemptErrors.push(`${mode}: ${message}`);
+        this.logTelemetry("tracker_start_failure", {
+          traceId,
+          preferred,
+          mode,
+          durationMs,
+          error: message,
+        });
+        logger.warn(`Tracker start failed for ${mode}: ${message}`);
+        this.trackerService.stop();
+      }
+    }
+
+    throw new Error(
+      `Unable to start tracker after ${attemptOrder.length} attempt(s): ${attemptErrors.join(" | ")}`,
+    );
+  }
+
+  private buildAnnounceList(
+    trackerType: "lan" | "localtunnel" | "untun",
+    primaryTracker: string,
+  ): string[] {
+    const trackers = [primaryTracker];
+
+    if (trackerType !== "lan") {
+      trackers.push(...TorrentService.PUBLIC_FALLBACK_TRACKERS);
+    }
+
+    return Array.from(
+      new Set(trackers.map((url) => url.trim()).filter(Boolean)),
+    );
+  }
+
+  private getTorrentHashOrUnknown(torrent: WebTorrent.Torrent): string {
+    return torrent.infoHash || "unknown";
+  }
+
   async seed(
     filePath: string,
     trackerType: "lan" | "localtunnel" | "untun" = "localtunnel",
   ): Promise<string> {
     const client = await this.clientReady;
+    const traceId = this.createTraceId();
+
+    this.logTelemetry("seed_start", {
+      traceId,
+      trackerType,
+      filePath,
+    });
+
     logger.info(
       `Starting seed for: ${filePath} with tracker type: ${trackerType}`,
     );
@@ -221,28 +329,74 @@ export class TorrentService extends EventEmitter {
 
     // Start local tracker
     let localTrackerUrl = "";
+    let resolvedTrackerType: "lan" | "localtunnel" | "untun" = trackerType;
     try {
       logger.info("Starting tracker service...");
-      this.trackerService.stop();
-      localTrackerUrl = await this.trackerService.start(trackerType);
-      logger.info(`Tracker service started at ${localTrackerUrl}`);
+      const trackerStart = await this.startTrackerWithFallback(
+        trackerType,
+        traceId,
+      );
+      localTrackerUrl = trackerStart.announceUrl;
+      resolvedTrackerType = trackerStart.mode;
+      logger.info(
+        `Tracker service started at ${localTrackerUrl} (resolved mode: ${resolvedTrackerType})`,
+      );
     } catch (err) {
       logger.error("Failed to start tracker service", err);
+      this.logTelemetry("seed_tracker_unavailable", {
+        traceId,
+        trackerType,
+        error: this.toErrorMessage(err),
+      });
+      throw new Error(
+        `Unable to start tracker for ${trackerType}: ${this.toErrorMessage(err)}`,
+      );
     }
 
-    return new Promise((resolve) => {
+    const announce = this.buildAnnounceList(
+      resolvedTrackerType,
+      localTrackerUrl,
+    );
+    if (announce.length === 0) {
+      throw new Error("No valid trackers available for this session");
+    }
+    logger.info(`Using ${announce.length} tracker(s): ${announce.join(", ")}`);
+    this.logTelemetry("seed_trackers_selected", {
+      traceId,
+      trackerType,
+      resolvedTrackerType,
+      announce,
+    });
+
+    return new Promise((resolve, reject) => {
       //if (this.activeTorrent) this.cleanup();
+
+      let settled = false;
 
       const t = client.seed(
         seedPath,
-        { announce: [localTrackerUrl] },
+        { announce },
         (torrent: WebTorrent.Torrent) => {
           logger.info(
             `Torrent creation complete! Took ${(Date.now() - startTime) / 1000}s`,
           );
           logger.info(`Magnet URI: ${torrent.magnetURI}`);
-          this.handleTorrent(torrent);
+          this.logTelemetry("seed_ready", {
+            traceId,
+            trackerType,
+            resolvedTrackerType,
+            infoHash: torrent.infoHash,
+            durationMs: Date.now() - startTime,
+          });
+          this.handleTorrent(torrent, {
+            traceId,
+            flow: "seed",
+            startedAt: startTime,
+            trackerType,
+            resolvedTrackerType,
+          });
           this.isHost = true;
+          settled = true;
           resolve(torrent.magnetURI);
         },
       );
@@ -261,39 +415,160 @@ export class TorrentService extends EventEmitter {
 
       t.on("warning", (err: unknown) => {
         logger.warn("Warning during seed:", err);
+        const message = this.toErrorMessage(err);
+        this.logTelemetry("seed_warning", {
+          traceId,
+          trackerType,
+          resolvedTrackerType,
+          warning: message,
+        });
+        if (message.toLowerCase().includes("fetch failed")) {
+          logger.warn(
+            "Tracker announce request failed. Peer discovery may be reduced until fallback trackers respond.",
+          );
+        }
       });
 
       t.on("error", (err: unknown) => {
         logger.error("Error during seed:", err);
+        this.logTelemetry("seed_error", {
+          traceId,
+          trackerType,
+          resolvedTrackerType,
+          error: this.toErrorMessage(err),
+        });
+        if (!settled) {
+          settled = true;
+          reject(
+            err instanceof Error ? err : new Error(this.toErrorMessage(err)),
+          );
+        }
       });
     });
   }
 
   async add(magnetURI: string): Promise<string> {
     const client = await this.clientReady;
+    const traceId = this.createTraceId();
+    const startedAt = Date.now();
+
+    this.logTelemetry("add_start", {
+      traceId,
+      magnetLength: magnetURI.length,
+      hasTrackerParam: magnetURI.includes("&tr="),
+    });
+
     //if (this.activeTorrent) this.cleanup();
 
     const torrent = client.add(magnetURI);
 
     // Handle torrent immediately to ensure wire extensions are registered
     // before the metadata is fully fetched (so the initial handshake includes the extension)
-    this.handleTorrent(torrent);
+    this.handleTorrent(torrent, {
+      traceId,
+      flow: "add",
+      startedAt,
+    });
     this.isHost = false;
 
     return new Promise((resolve) => {
       torrent.on("infoHash", () => {
+        this.logTelemetry("add_infohash", {
+          traceId,
+          infoHash: torrent.infoHash,
+          durationMs: Date.now() - startedAt,
+        });
         resolve(torrent.infoHash);
       });
+
+      torrent.on("metadata", () => {
+        this.logTelemetry("add_metadata", {
+          traceId,
+          infoHash: this.getTorrentHashOrUnknown(torrent),
+          durationMs: Date.now() - startedAt,
+        });
+      });
+
+      torrent.on("ready", () => {
+        this.logTelemetry("add_ready", {
+          traceId,
+          infoHash: this.getTorrentHashOrUnknown(torrent),
+          durationMs: Date.now() - startedAt,
+        });
+      });
+
+      torrent.on("warning", (err: unknown) => {
+        this.logTelemetry("add_warning", {
+          traceId,
+          infoHash: this.getTorrentHashOrUnknown(torrent),
+          warning: this.toErrorMessage(err),
+        });
+      });
+
+      torrent.on("error", (err: unknown) => {
+        this.logTelemetry("add_error", {
+          traceId,
+          infoHash: this.getTorrentHashOrUnknown(torrent),
+          error: this.toErrorMessage(err),
+        });
+      });
+
       // Fallback if infoHash is already there? (unlikely for magnet)
-      if (torrent.infoHash) resolve(torrent.infoHash);
+      if (torrent.infoHash) {
+        this.logTelemetry("add_infohash", {
+          traceId,
+          infoHash: torrent.infoHash,
+          durationMs: Date.now() - startedAt,
+          immediate: true,
+        });
+        resolve(torrent.infoHash);
+      }
     });
   }
 
-  private handleTorrent(torrent: WebTorrent.Torrent) {
+  private handleTorrent(
+    torrent: WebTorrent.Torrent,
+    context?: {
+      traceId: string;
+      flow: "seed" | "add";
+      startedAt: number;
+      trackerType?: "lan" | "localtunnel" | "untun";
+      resolvedTrackerType?: "lan" | "localtunnel" | "untun";
+    },
+  ) {
     this.activeTorrent = torrent;
     this.extensions.clear();
     this.peerProgress.clear();
     this.lastEmit = 0;
+
+    let firstPeerLogged = false;
+    const firstPeerTimeout = setTimeout(() => {
+      if (!context || firstPeerLogged) return;
+      this.logTelemetry("peer_wait_timeout", {
+        traceId: context.traceId,
+        flow: context.flow,
+        infoHash: this.getTorrentHashOrUnknown(torrent),
+        timeoutMs: TorrentService.PEER_WAIT_TIMEOUT_MS,
+        numPeers: torrent.numPeers,
+      });
+    }, TorrentService.PEER_WAIT_TIMEOUT_MS);
+
+    const maybeLogFirstPeer = (wire: Wire) => {
+      if (!context || firstPeerLogged) return;
+      firstPeerLogged = true;
+      clearTimeout(firstPeerTimeout);
+      this.logTelemetry("peer_first_wire", {
+        traceId: context.traceId,
+        flow: context.flow,
+        infoHash: this.getTorrentHashOrUnknown(torrent),
+        peerId: wire.peerId,
+        remoteAddress: wire.remoteAddress,
+        remotePort: wire.remotePort,
+        durationMs: Date.now() - context.startedAt,
+        trackerType: context.trackerType,
+        resolvedTrackerType: context.resolvedTrackerType,
+      });
+    };
 
     // Register Extension using a class wrapper to satisfy bittorrent-protocol
     // eslint-disable-next-line @typescript-eslint/no-this-alias
@@ -324,6 +599,7 @@ export class TorrentService extends EventEmitter {
     torrent.on("wire", (wire: Wire) => {
       const remote = `${wire.remoteAddress}:${wire.remotePort}`;
       logger.info(`New wire connected: ${wire.peerId} (${remote})`);
+      maybeLogFirstPeer(wire);
       wire.use(EXT);
 
       wire.on("close", () => {
@@ -335,6 +611,7 @@ export class TorrentService extends EventEmitter {
       torrent.wires.forEach((wire: Wire) => {
         const remote = `${wire.remoteAddress}:${wire.remotePort}`;
         logger.info(`Attaching to existing wire: ${wire.peerId} (${remote})`);
+        maybeLogFirstPeer(wire);
         wire.use(EXT);
 
         wire.on("close", () => {
@@ -344,9 +621,18 @@ export class TorrentService extends EventEmitter {
     }
 
     torrent.on("done", () => {
+      clearTimeout(firstPeerTimeout);
       logger.info("Torrent download/seed complete");
       this.emitProgress(true);
       this.emit("done");
+    });
+
+    torrent.on("close", () => {
+      clearTimeout(firstPeerTimeout);
+    });
+
+    torrent.on("error", () => {
+      clearTimeout(firstPeerTimeout);
     });
 
     const onProgress = () => this.emitProgress();

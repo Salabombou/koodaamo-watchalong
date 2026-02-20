@@ -11,6 +11,27 @@ export class TrackerService {
   private port: number = 0;
   private tunnelUrl: string | null = null;
 
+  private async probeAnnounceUrl(announceUrl: string): Promise<void> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+
+    try {
+      const response = await fetch(announceUrl, {
+        method: "GET",
+        signal: controller.signal,
+      });
+      logger.info(
+        `Tracker announce probe response: ${response.status} (${announceUrl})`,
+      );
+    } catch (error) {
+      throw new Error(
+        `Tracker announce endpoint is unreachable: ${announceUrl} (${error instanceof Error ? error.message : String(error)})`,
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   async start(
     type: "lan" | "localtunnel" | "untun" = "localtunnel",
   ): Promise<string> {
@@ -62,8 +83,6 @@ export class TrackerService {
               }
               this.tunnelUrl = `http://${ip}:${this.port}`;
               logger.info(`Tracker accessible on LAN at: ${this.tunnelUrl}`);
-              resolve(this.getAnnounceUrl());
-              return;
             } else if (type === "untun") {
               // Try Cloudflare Quick Tunnel (untun)
               this.untunTunnel = await startTunnel({
@@ -77,30 +96,27 @@ export class TrackerService {
               logger.info(
                 `Cloudflare Tunnel established at: ${this.tunnelUrl}`,
               );
-              resolve(this.getAnnounceUrl());
-              return;
+            } else {
+              // Default: LocalTunnel
+              // Note: Some public localtunnel servers show interstitial pages.
+              // If encountered, consider using a custom server or passing headers if client allows.
+              this.tunnel = await localtunnel({ port: this.port });
+              this.tunnelUrl = this.tunnel.url;
+              logger.info(`Tunnel established at: ${this.tunnelUrl}`);
+
+              this.tunnel.on("close", () => {
+                logger.info("Tunnel closed");
+                this.tunnelUrl = null;
+              });
             }
 
-            // Default: LocalTunnel
-            // Note: Some public localtunnel servers show interstitial pages.
-            // If encountered, consider using a custom server or passing headers if client allows.
-            this.tunnel = await localtunnel({ port: this.port });
-            this.tunnelUrl = this.tunnel.url;
-            logger.info(`Tunnel established at: ${this.tunnelUrl}`);
+            const announceUrl = this.getAnnounceUrl();
+            if (!announceUrl) {
+              throw new Error("Failed to compute tracker announce URL");
+            }
 
-            this.tunnel.on("close", () => {
-              logger.info("Tunnel closed");
-              this.tunnelUrl = null;
-            });
-
-            // localtunnel returns http/https, but often we want to advertise ws/wss for webtorrent
-            // However, the magnet link tracker URL should generally be HTTP(S) for a standardized announce,
-            // or WS(S) if specifically targeting WebTorrent (browser) clients.
-            // For universal compatibility, we might want to return the HTTPS URL, and let clients upgrade or handle it.
-            // But WebTorrent specifically looks for wss:// for websocket trackers.
-
-            // Return the websocket URL version
-            resolve(this.getAnnounceUrl());
+            await this.probeAnnounceUrl(announceUrl);
+            resolve(announceUrl);
           } catch (err) {
             logger.error("Failed to set up tracker access:", err);
             reject(err);

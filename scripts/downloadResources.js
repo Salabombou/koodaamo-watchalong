@@ -10,6 +10,7 @@ const CLOUD_TORRENT_RELEASE_URL =
   "https://api.github.com/repos/jpillora/cloud-torrent/releases/latest";
 const FFMPEG_RELEASE_URL =
   "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest";
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 
 const OUTPUT_ROOT = path.join(process.cwd(), "resources");
 const CLOUD_OUTPUT_ROOT = path.join(OUTPUT_ROOT, "cloud-torrent");
@@ -144,6 +145,7 @@ async function downloadText(url) {
   const stream = await request(url, {
     "User-Agent": "koodaamo-watchalong-build",
     Accept: "application/vnd.github+json",
+    ...(GITHUB_TOKEN ? { Authorization: `Bearer ${GITHUB_TOKEN}` } : {}),
   });
   let raw = "";
   stream.setEncoding("utf8");
@@ -162,6 +164,7 @@ async function downloadFile(url, outputPath) {
   const stream = await request(url, {
     "User-Agent": "koodaamo-watchalong-build",
     Accept: "application/octet-stream",
+    ...(GITHUB_TOKEN ? { Authorization: `Bearer ${GITHUB_TOKEN}` } : {}),
   });
   await pipeline(stream, fs.createWriteStream(outputPath));
 }

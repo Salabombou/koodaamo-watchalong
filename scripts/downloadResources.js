@@ -37,6 +37,10 @@ const FFMPEG_PLATFORM_TOKEN = {
     x64: "win64",
     arm64: "winarm64",
   },
+  darwin: {
+    x64: "macos64",
+    arm64: "macosarm64",
+  },
   linux: {
     x64: "linux64",
     arm64: "linuxarm64",

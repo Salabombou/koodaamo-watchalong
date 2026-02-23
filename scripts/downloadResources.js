@@ -10,7 +10,11 @@ const CLOUD_TORRENT_RELEASE_URL =
   "https://api.github.com/repos/jpillora/cloud-torrent/releases/latest";
 const FFMPEG_RELEASE_URL =
   "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/latest";
+const FFMPEG_RELEASES_URL =
+  "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=20";
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+const ALLOW_SYSTEM_FFMPEG_FALLBACK =
+  process.env.ALLOW_SYSTEM_FFMPEG_FALLBACK !== "0";
 
 const OUTPUT_ROOT = path.join(process.cwd(), "resources");
 const CLOUD_OUTPUT_ROOT = path.join(OUTPUT_ROOT, "cloud-torrent");
@@ -250,33 +254,79 @@ function parseFfmpegVersionFromName(name) {
   return Number.parseFloat(versionMatch[1]);
 }
 
-function resolveFfmpegAsset(release, target) {
-  const token = FFMPEG_PLATFORM_TOKEN[target.platform]?.[target.arch];
-  if (!token) {
+function getFfmpegTokenAliases(platform, arch) {
+  const canonicalToken = FFMPEG_PLATFORM_TOKEN[platform]?.[arch];
+  if (!canonicalToken) {
+    return [];
+  }
+
+  const aliases = new Set([canonicalToken]);
+  if (platform === "darwin") {
+    if (arch === "arm64") {
+      aliases.add("mac-arm64");
+      aliases.add("darwinarm64");
+      aliases.add("macos-aarch64");
+    }
+    if (arch === "x64") {
+      aliases.add("mac64");
+      aliases.add("darwin64");
+    }
+  }
+
+  return Array.from(aliases);
+}
+
+function resolveFfmpegAssetInRelease(release, target) {
+  const tokenAliases = getFfmpegTokenAliases(target.platform, target.arch);
+  if (tokenAliases.length === 0) {
     throw new Error(
       `Unsupported ffmpeg target: ${target.platform}/${target.arch}`,
     );
   }
 
-  const matcher = new RegExp(
-    `^ffmpeg-(?:n\\d+\\.\\d+|master)-latest-${token}-gpl(?:-\\d+\\.\\d+)?\\.(zip|tar\\.xz)$`,
-  );
+  const matcher =
+    /^ffmpeg-(?:n\d+\.\d+|master)-latest-(.+)-(gpl|lgpl)(?:-\d+\.\d+)?\.(zip|tar\.xz)$/i;
 
-  const candidates = (release.assets || []).filter((candidate) =>
-    matcher.test(candidate.name),
-  );
+  const candidates = (release.assets || [])
+    .map((candidate) => {
+      const match = candidate.name.match(matcher);
+      if (!match) {
+        return null;
+      }
+
+      const assetToken = match[1].toLowerCase();
+      const matchedAlias = tokenAliases.find(
+        (tokenAlias) => assetToken === tokenAlias.toLowerCase(),
+      );
+
+      if (!matchedAlias) {
+        return null;
+      }
+
+      const license = match[2].toLowerCase();
+      const version = parseFfmpegVersionFromName(candidate.name);
+      return {
+        candidate,
+        license,
+        version,
+      };
+    })
+    .filter(Boolean);
 
   if (candidates.length === 0) {
-    throw new Error(`ffmpeg asset not found for token ${token}`);
+    return null;
   }
 
   candidates.sort((a, b) => {
-    const aScore = parseFfmpegVersionFromName(a.name);
-    const bScore = parseFfmpegVersionFromName(b.name);
-    if (aScore !== bScore) {
-      return bScore - aScore;
+    const aLicenseScore = a.license === "gpl" ? 2 : 1;
+    const bLicenseScore = b.license === "gpl" ? 2 : 1;
+    if (aLicenseScore !== bLicenseScore) {
+      return bLicenseScore - aLicenseScore;
     }
-    return a.name.localeCompare(b.name);
+    if (a.version !== b.version) {
+      return b.version - a.version;
+    }
+    return a.candidate.name.localeCompare(b.candidate.name);
   });
 
   const checksumsAsset = (release.assets || []).find(
@@ -284,10 +334,13 @@ function resolveFfmpegAsset(release, target) {
   );
 
   if (!checksumsAsset) {
-    throw new Error("ffmpeg checksums.sha256 asset not found");
+    return null;
   }
 
-  return { asset: candidates[0], checksumsAsset };
+  return {
+    asset: candidates[0].candidate,
+    checksumsAsset,
+  };
 }
 
 function extractTarArchive(archivePath, outputDir) {
@@ -301,6 +354,133 @@ function extractTarArchive(archivePath, outputDir) {
       `Failed to extract archive ${archivePath}: ${result.stderr || result.stdout}`,
     );
   }
+}
+
+function extractZipArchive(archivePath, outputDir) {
+  ensureDirectory(outputDir);
+
+  const commands =
+    process.platform === "win32"
+      ? [
+          [
+            "powershell",
+            [
+              "-NoProfile",
+              "-Command",
+              `Expand-Archive -LiteralPath '${archivePath}' -DestinationPath '${outputDir}' -Force`,
+            ],
+          ],
+          ["tar", ["-xf", archivePath, "-C", outputDir]],
+        ]
+      : [
+          ["unzip", ["-o", archivePath, "-d", outputDir]],
+          ["tar", ["-xf", archivePath, "-C", outputDir]],
+        ];
+
+  for (const [command, args] of commands) {
+    const result = spawnSync(command, args, { encoding: "utf8" });
+    if (result.status === 0) {
+      return;
+    }
+  }
+
+  throw new Error(`Failed to extract zip archive ${archivePath}`);
+}
+
+function extractArchive(archivePath, outputDir) {
+  if (archivePath.endsWith(".zip")) {
+    extractZipArchive(archivePath, outputDir);
+    return;
+  }
+
+  extractTarArchive(archivePath, outputDir);
+}
+
+function summarizeRelease(release) {
+  return release?.tag_name || release?.name || String(release?.id || "unknown");
+}
+
+function findExecutablePath(commandName) {
+  const locator = process.platform === "win32" ? "where" : "which";
+  const result = spawnSync(locator, [commandName], { encoding: "utf8" });
+  if (result.status !== 0) {
+    return "";
+  }
+
+  const lines = result.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length === 0) {
+    return "";
+  }
+
+  return lines[0];
+}
+
+function prepareSystemFfmpeg(target) {
+  const ffmpegCheck = spawnSync("ffmpeg", ["-version"], { encoding: "utf8" });
+  const ffprobeCheck = spawnSync("ffprobe", ["-version"], {
+    encoding: "utf8",
+  });
+
+  if (ffmpegCheck.status !== 0 || ffprobeCheck.status !== 0) {
+    return false;
+  }
+
+  const ffmpegSource = findExecutablePath("ffmpeg");
+  const ffprobeSource = findExecutablePath("ffprobe");
+  if (!ffmpegSource || !ffprobeSource) {
+    return false;
+  }
+
+  const ffmpegName = target.platform === "win32" ? "ffmpeg.exe" : "ffmpeg";
+  const ffprobeName = target.platform === "win32" ? "ffprobe.exe" : "ffprobe";
+  const targetDir = path.join(BIN_OUTPUT_ROOT, target.platform, target.arch);
+  ensureDirectory(targetDir);
+
+  const ffmpegTarget = path.join(targetDir, ffmpegName);
+  const ffprobeTarget = path.join(targetDir, ffprobeName);
+  fs.copyFileSync(ffmpegSource, ffmpegTarget);
+  fs.copyFileSync(ffprobeSource, ffprobeTarget);
+  fs.chmodSync(ffmpegTarget, 0o755);
+  fs.chmodSync(ffprobeTarget, 0o755);
+
+  console.log(`[resources] ffmpeg fallback source: ${ffmpegSource}`);
+  console.log(`[resources] ffprobe fallback source: ${ffprobeSource}`);
+  console.log(`[resources] ffmpeg ready (system fallback): ${ffmpegTarget}`);
+  console.log(`[resources] ffprobe ready (system fallback): ${ffprobeTarget}`);
+
+  return true;
+}
+
+async function resolveFfmpegAsset(target) {
+  const latestRelease = await downloadJson(FFMPEG_RELEASE_URL);
+  const latestResolved = resolveFfmpegAssetInRelease(latestRelease, target);
+  if (latestResolved) {
+    return { release: latestRelease, ...latestResolved };
+  }
+
+  const recentReleases = await downloadJson(FFMPEG_RELEASES_URL);
+  for (const release of recentReleases) {
+    if (release.draft || release.prerelease) {
+      continue;
+    }
+    if (release.id === latestRelease.id) {
+      continue;
+    }
+
+    const resolved = resolveFfmpegAssetInRelease(release, target);
+    if (resolved) {
+      return { release, ...resolved };
+    }
+  }
+
+  const aliases = getFfmpegTokenAliases(target.platform, target.arch);
+  throw new Error(
+    `ffmpeg asset not found for target ${target.platform}/${target.arch}. checked recent BtbN releases for tokens: ${aliases.join(", ")}`,
+  );
 }
 
 function findFileRecursively(rootDir, filename) {
@@ -389,8 +569,25 @@ async function downloadCloudTorrent(target) {
 }
 
 async function downloadFfmpeg(target) {
-  const release = await downloadJson(FFMPEG_RELEASE_URL);
-  const { asset, checksumsAsset } = resolveFfmpegAsset(release, target);
+  let selectedFfmpeg;
+  try {
+    selectedFfmpeg = await resolveFfmpegAsset(target);
+  } catch (error) {
+    if (
+      target.platform === "darwin" &&
+      ALLOW_SYSTEM_FFMPEG_FALLBACK &&
+      prepareSystemFfmpeg(target)
+    ) {
+      console.warn(
+        `[resources] Falling back to system ffmpeg because BtbN release lookup failed: ${error.message}`,
+      );
+      return;
+    }
+
+    throw error;
+  }
+
+  const { release, asset, checksumsAsset } = selectedFfmpeg;
 
   const checksumsText = await downloadText(checksumsAsset.browser_download_url);
   const checksums = parseChecksums(checksumsText);
@@ -401,7 +598,7 @@ async function downloadFfmpeg(target) {
 
   const extractDir = path.join(TMP_ROOT, "ffmpeg-extract");
   removeDirectory(extractDir);
-  extractTarArchive(archivePath, extractDir);
+  extractArchive(archivePath, extractDir);
 
   const ffmpegName = target.platform === "win32" ? "ffmpeg.exe" : "ffmpeg";
   const ffprobeName = target.platform === "win32" ? "ffprobe.exe" : "ffprobe";
@@ -423,6 +620,9 @@ async function downloadFfmpeg(target) {
   fs.chmodSync(ffmpegTarget, 0o755);
   fs.chmodSync(ffprobeTarget, 0o755);
 
+  console.log(
+    `[resources] ffmpeg release selected: ${summarizeRelease(release)}`,
+  );
   console.log(`[resources] ffmpeg ready (${asset.name}): ${ffmpegTarget}`);
   console.log(`[resources] ffprobe ready (${asset.name}): ${ffprobeTarget}`);
 }

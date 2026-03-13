@@ -4,9 +4,7 @@ const path = require("node:path");
 const PREBUILD_MODULES = [
   "bufferutil",
   "fs-native-extensions",
-  "node-datachannel",
   "utf-8-validate",
-  "utp-native",
 ];
 
 function listDirectoryEntries(directoryPath) {
@@ -55,7 +53,6 @@ function resolveBinaryNames(platformName) {
   return {
     ffmpeg: isWindows ? "ffmpeg.exe" : "ffmpeg",
     ffprobe: isWindows ? "ffprobe.exe" : "ffprobe",
-    cloudTorrent: isWindows ? "cloud-torrent.exe" : "cloud-torrent",
   };
 }
 
@@ -151,53 +148,6 @@ function pruneDownloadedMediaResources(resourcesRoot, platformName, archName) {
   }
 }
 
-function pruneCloudTorrentResources(resourcesRoot, platformName, archName) {
-  const cloudTorrentRoot = path.join(resourcesRoot, "cloud-torrent");
-  const normalizedArch = mapArchName(archName);
-
-  if (!fs.existsSync(cloudTorrentRoot)) {
-    console.log(
-      "[afterPackPrune] Skipped cloud-torrent pruning: resource not found",
-    );
-    return;
-  }
-
-  for (const platformEntry of listDirectoryEntries(cloudTorrentRoot)) {
-    if (!platformEntry.isDirectory()) {
-      continue;
-    }
-
-    if (platformEntry.name !== platformName) {
-      removeDirectoryIfExists(path.join(cloudTorrentRoot, platformEntry.name));
-      continue;
-    }
-
-    const platformRoot = path.join(cloudTorrentRoot, platformEntry.name);
-    for (const archEntry of listDirectoryEntries(platformRoot)) {
-      if (!archEntry.isDirectory()) {
-        continue;
-      }
-
-      if (archEntry.name !== normalizedArch) {
-        removeDirectoryIfExists(path.join(platformRoot, archEntry.name));
-      }
-    }
-
-    const binaryNames = resolveBinaryNames(platformName);
-    const selectedBinary = path.join(
-      platformRoot,
-      normalizedArch,
-      binaryNames.cloudTorrent,
-    );
-
-    if (!fs.existsSync(selectedBinary)) {
-      console.warn(
-        `[afterPackPrune] Expected cloud-torrent binary not found: ${selectedBinary}`,
-      );
-    }
-  }
-}
-
 module.exports = async function afterPack(context) {
   const { appOutDir, electronPlatformName, arch } = context;
   const nodeModulesRoot = resolveNodeModulesRoot(appOutDir);
@@ -208,7 +158,6 @@ module.exports = async function afterPack(context) {
     return;
   }
 
-  pruneCloudTorrentResources(resourcesRoot, electronPlatformName, arch);
   pruneDownloadedMediaResources(resourcesRoot, electronPlatformName, arch);
 
   if (!nodeModulesRoot) {

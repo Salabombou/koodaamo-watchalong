@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 
 export default function Home() {
-  const [magnet, setMagnet] = useState("");
+  const [invite, setInvite] = useState("");
   const [isDirty, setIsDirty] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
 
@@ -23,20 +23,29 @@ export default function Home() {
 
   const navigate = useNavigate();
 
-  const isValidMagnet = (url: string) => {
-    return /^magnet:\?xt=urn:btih:[a-zA-Z0-9]{32,40}.*$/.test(url);
+  const isValidInvite = (url: string) => {
+    try {
+      const parsed = new URL(url);
+      return (
+        parsed.protocol === "koodaamo-watchalong:" &&
+        Boolean(parsed.searchParams.get("room-code")) &&
+        Boolean(parsed.searchParams.get("host"))
+      );
+    } catch {
+      return false;
+    }
   };
 
   const handleJoin = () => {
-    if (isValidMagnet(magnet)) {
-      navigate(`/dashboard?magnet=${encodeURIComponent(magnet)}`);
+    if (isValidInvite(invite)) {
+      navigate(`/dashboard?invite=${encodeURIComponent(invite)}`);
     }
   };
 
   const handlePaste = async () => {
     try {
       const text = await navigator.clipboard.readText();
-      setMagnet(text);
+      setInvite(text);
       setIsDirty(true);
     } catch (err) {
       console.error("Failed to read clipboard", err);
@@ -52,13 +61,13 @@ export default function Home() {
     document.documentElement.setAttribute("data-theme", theme);
   };
 
-  const handleMagnetChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setMagnet(e.target.value);
+  const handleInviteChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setInvite(e.target.value);
     setIsDirty(true);
   };
 
-  const valid = isValidMagnet(magnet);
-  const showError = isDirty && magnet.length > 0 && !valid;
+  const valid = isValidInvite(invite);
+  const showError = isDirty && invite.length > 0 && !valid;
 
   return (
     <div className="hero min-h-screen bg-base-200 relative overflow-hidden transition-colors duration-300">
@@ -91,14 +100,14 @@ export default function Home() {
             <div className="form-control w-full">
               <label className="label">
                 <span className="label-text font-bold uppercase">
-                  Magnet Link
+                  Room Invite
                 </span>
               </label>
               <div className="join w-full">
                 <input
-                  value={magnet}
-                  onChange={handleMagnetChange}
-                  placeholder="magnet:?xt=urn:..."
+                  value={invite}
+                  onChange={handleInviteChange}
+                  placeholder="koodaamo-watchalong:///?room-code=...&host=..."
                   className={`input input-bordered join-item w-full font-mono text-sm ${showError ? "input-error" : ""}`}
                 />
                 <button
@@ -112,7 +121,7 @@ export default function Home() {
               {showError && (
                 <label className="label">
                   <span className="label-text-alt text-error font-bold">
-                    Invalid magnet link format
+                    Invalid invite format
                   </span>
                 </label>
               )}
@@ -148,7 +157,7 @@ export default function Home() {
                   <h3 className="font-bold">About</h3>
                   <div className="text-xs">Koodaamo Watchalong v1.0</div>
                   <div className="text-xs font-mono opacity-70">
-                    Open Source P2P Streaming
+                    Open Source REST Watchalong
                   </div>
                 </div>
               </div>

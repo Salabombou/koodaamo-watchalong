@@ -56,7 +56,7 @@ export default function Player() {
     const video = videoRef.current;
     if (!video) return;
 
-    window.electronAPI.broadcastCommand({
+    window.electronAPI.sendSyncCommand({
       type,
       time: video.currentTime,
       timestamp: Date.now(),
@@ -247,9 +247,9 @@ export default function Player() {
   useEffect(() => {
     let isMounted = true;
 
-    window.electronAPI.checkIsHost().then(setIsHost);
+    window.electronAPI.isRoomHost().then(setIsHost);
 
-    window.electronAPI.getStreamUrl().then((url) => {
+    window.electronAPI.getRoomStreamUrl().then((url) => {
       if (!isMounted) return;
 
       setStreamUrl(url);
@@ -621,7 +621,7 @@ export default function Player() {
       const video = videoRef.current;
       if (!video) return;
 
-      window.electronAPI.broadcastCommand({
+      window.electronAPI.sendSyncCommand({
         type: "heartbeat",
         time: video.currentTime,
         state: video.paused ? "paused" : "playing",

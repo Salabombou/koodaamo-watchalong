@@ -1,14 +1,16 @@
 import { app, BrowserWindow, protocol } from "electron";
 import logger from "@utilities/logging";
+import path from "path";
+import { IPC_CHANNELS } from "@shared/channels";
 
 import { StorageService } from "@services/StorageService";
 import { MediaService } from "@services/MediaService";
-import { TorrentService } from "@services/TorrentService";
+import { RoomService } from "@services/RoomService";
 
 import { AppController } from "@controllers/AppController";
 import { WindowController } from "@controllers/WindowController";
 import { MediaController } from "@controllers/MediaController";
-import { TorrentController } from "@controllers/TorrentController";
+import { RoomController } from "@controllers/RoomController";
 
 declare const MAIN_WINDOW_WEBPACK_ENTRY: string;
 declare const MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY: string;
@@ -31,7 +33,7 @@ logger.info("Running app version " + app.getVersion());
 let storageService: StorageService;
 logger.info("Initializing services...");
 const mediaService = new MediaService();
-const torrentService = new TorrentService();
+const roomService = new RoomService();
 logger.info("Services initialized.");
 
 // Global Error Handlers
@@ -57,6 +59,22 @@ if (require("electron-squirrel-startup")) {
 }
 
 let mainWindow: BrowserWindow | null = null;
+let pendingInvite: string | null = null;
+
+const extractInviteFromArgs = (args: string[]) =>
+  args.find((arg) => arg.startsWith("koodaamo-watchalong://")) ?? null;
+
+const dispatchInvite = (inviteUrl: string) => {
+  pendingInvite = inviteUrl;
+
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  mainWindow.webContents.send(IPC_CHANNELS.APP.INVITE_OPENED, inviteUrl);
+};
+
+pendingInvite = extractInviteFromArgs(process.argv);
 
 const createWindow = () => {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -91,6 +109,7 @@ const createWindow = () => {
 
   mainWindow.on("closed", () => {
     mainWindow = null;
+    app.exit(0);
   });
 
   mainWindow.webContents.on(
@@ -99,6 +118,13 @@ const createWindow = () => {
       logger.error(`Failed to load window: ${errorCode} - ${errorDescription}`);
     },
   );
+
+  mainWindow.webContents.once("did-finish-load", () => {
+    if (pendingInvite && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(IPC_CHANNELS.APP.INVITE_OPENED, pendingInvite);
+      pendingInvite = null;
+    }
+  });
 };
 
 let playerWindow: BrowserWindow | null = null;
@@ -133,6 +159,14 @@ const createPlayerWindow = () => {
 app.whenReady().then(() => {
   logger.info("App Ready event fired.");
 
+  if (process.defaultApp && process.argv.length >= 2) {
+    app.setAsDefaultProtocolClient("koodaamo-watchalong", process.execPath, [
+      path.resolve(process.argv[1]),
+    ]);
+  } else {
+    app.setAsDefaultProtocolClient("koodaamo-watchalong");
+  }
+
   // Register protocol
   protocol.handle("stream", () => {
     return new Response("Stream protocol is disabled", { status: 410 });
@@ -145,7 +179,7 @@ app.whenReady().then(() => {
   new AppController(); // Handles updates internally now
   new WindowController(createPlayerWindow);
   new MediaController(mediaService, storageService);
-  new TorrentController(torrentService);
+  new RoomController(roomService);
 
   createWindow();
 
@@ -157,12 +191,20 @@ app.whenReady().then(() => {
 
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") {
-      void torrentService.shutdown();
+      void roomService.shutdown();
       app.quit();
     }
   });
 
   app.on("before-quit", () => {
-    void torrentService.shutdown();
+    void roomService.shutdown();
+  });
+
+  app.on("open-url", (event, url) => {
+    event.preventDefault();
+    if (url.startsWith("koodaamo-watchalong://")) {
+      dispatchInvite(url);
+      createWindow();
+    }
   });
 });

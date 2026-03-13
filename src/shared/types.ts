@@ -1,10 +1,12 @@
-export interface TorrentProgress {
+export interface RoomProgress {
   progress: number;
   downloadSpeed: number;
   uploadSpeed: number;
   numPeers: number;
   peerProgress: Record<string, number>;
 }
+
+export type HostAccessMode = "lan" | "localtunnel" | "untun";
 
 export type SyncCommandType =
   | "play"
@@ -81,18 +83,18 @@ export interface ElectronAPI {
     options: SegmentMediaOptions,
   ) => Promise<string>;
   onMediaProgress: (callback: (percent: number) => void) => () => void;
-  seedTorrent: (
+  hostRoom: (
     filePath: string,
-    trackerType: "lan" | "localtunnel" | "untun",
+    hostAccessMode: HostAccessMode,
   ) => Promise<string>;
-
-  addTorrent: (magnet: string) => Promise<string>;
-  checkIsHost: () => Promise<boolean>;
-  getStreamUrl: () => Promise<string>;
-  onTorrentProgress: (callback: (data: TorrentProgress) => void) => () => void;
-  broadcastCommand: (cmd: SyncCommand) => void;
+  joinRoom: (inviteUrl: string) => Promise<string>;
+  isRoomHost: () => Promise<boolean>;
+  getRoomStreamUrl: () => Promise<string>;
+  onRoomProgress: (callback: (data: RoomProgress) => void) => () => void;
+  sendSyncCommand: (cmd: SyncCommand) => void;
   onSyncCommand: (callback: (cmd: SyncCommand) => void) => () => void;
-  onTorrentDone: (callback: () => void) => () => void;
+  onRoomReady: (callback: () => void) => () => void;
+  onInviteOpened: (callback: (inviteUrl: string) => void) => () => void;
   openPlayerWindow: () => Promise<void>;
   restartApp: () => Promise<void>;
   onUpdateAvailable: (callback: () => void) => () => void;

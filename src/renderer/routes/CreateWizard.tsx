@@ -261,34 +261,11 @@ export default function CreateWizard() {
     if (!segmentedPath) return;
     setCreating(true);
     try {
-      // For HLS, we seed the folder containing the m3u8 and ts files.
-      // The segmentedPath points to the .m3u8 file.
-      // We rely on the backend to handle the seeding of the folder if we pass the m3u8 path, or we pass the folder.
-      // However, `webtorrent` usually takes a folder path to seed a folder.
-      // Let's assume on the backend, if `segmentMedia` was used, the path is already in the right place.
-      // BUT `seedTorrent` in `TorrentService` just calls `client.seed(filePath)`.
-      // If we pass `.../video.m3u8`, it seeds just that file.
-      // We need to pass the directory.
-      // Since we can't do path manipulation easily here, the `segmentMedia` returns the playlist path.
-      // Let's modify `TorrentService` to handle this or modify `handleSegmentation` return value?
-      // Actually, if we pass a directory to `client.seed`, it seeds the directory.
-      // I'll update `seedTorrent` in the backend to check if it's an .m3u8 file inside a folder and seed the folder?
-      // Or easier: I'll hack it here by not changing backend too much if I can avoid it.
-      // But verify: `window.electronAPI.seedTorrent` takes a string.
-
-      // Let's modify `seedTorrent` in `TorrentService` to detect if the path is an m3u8 and seed its parent dir?
-      // No, that's implicit magic.
-      // Better: Update `MediaService` to return the FOLDER path?
-      // Or update `CreateWizard` to ask backend to seed the folder.
-      // I'll assume for now `segmentedPath` is the m3u8 file.
-      // I need to change `TorrentService.seed` to handle this case:
-      // if path ends in .m3u8, seed path.dirname(path).
-
-      const magnet = await window.electronAPI.seedTorrent(
+      const invite = await window.electronAPI.hostRoom(
         segmentedPath,
         trackerType,
       );
-      navigate(`/dashboard?magnet=${encodeURIComponent(magnet)}&host=true`);
+      navigate(`/dashboard?invite=${encodeURIComponent(invite)}&host=true`);
     } catch (e) {
       console.error(e);
       const message =
@@ -798,7 +775,7 @@ export default function CreateWizard() {
                 </h2>
                 <p className="font-bold mb-8 max-w-md opacity-70">
                   By clicking continue, you will start hosting. Keep this app
-                  open to seed the content!
+                  open so guests can request segments and sync playback.
                 </p>
 
                 <div className="card w-full max-w-md bg-base-200 shadow-inner">

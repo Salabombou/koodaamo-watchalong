@@ -7,11 +7,6 @@ import { rendererConfig } from "./webpack.renderer.config";
 
 import path from "path";
 
-const cloudTorrentResourcesPath = path.join(
-  process.cwd(),
-  "resources",
-  "cloud-torrent",
-);
 const mediaResourcesPath = path.join(process.cwd(), "resources", "bin");
 
 const DEV_CONTENT_SECURITY_POLICY =
@@ -22,9 +17,9 @@ const DEV_CONTENT_SECURITY_POLICY =
   "object-src 'none'; " +
   "script-src 'self' 'unsafe-inline' blob:; " +
   "worker-src 'self' blob:; " +
-  "connect-src 'self' ws://127.0.0.1:* ws://localhost:* http://127.0.0.1:* http://localhost:*; " +
+  "connect-src 'self' http://127.0.0.1:* http://localhost:* http://*:* https://trycloudflare.com https://*.trycloudflare.com https://loca.lt https://*.loca.lt https://localtunnel.me https://*.localtunnel.me; " +
   "img-src 'self' data: blob:; " +
-  "media-src 'self' blob: http://127.0.0.1:* http://localhost:*; " +
+  "media-src 'self' blob: http://127.0.0.1:* http://localhost:* http://*:* https://trycloudflare.com https://*.trycloudflare.com https://loca.lt https://*.loca.lt https://localtunnel.me https://*.localtunnel.me; " +
   "style-src 'self' 'unsafe-inline'; " +
   "style-src-elem 'self' 'unsafe-inline'; " +
   "style-src-attr 'unsafe-inline'; " +
@@ -33,7 +28,7 @@ const DEV_CONTENT_SECURITY_POLICY =
 const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
-    extraResource: [mediaResourcesPath, cloudTorrentResourcesPath],
+    extraResource: [mediaResourcesPath],
   },
   rebuildConfig: {},
   plugins: [

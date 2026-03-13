@@ -8,7 +8,8 @@ import { IPC_CHANNELS } from "@shared/channels";
 import {
   ElectronAPI,
   SyncCommand,
-  TorrentProgress,
+  RoomProgress,
+  HostAccessMode,
   MediaAnalysis,
   SegmentMediaOptions,
   HardwareAccelerationInfo,
@@ -52,34 +53,41 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.removeListener(IPC_CHANNELS.MEDIA.PROGRESS, subscription);
   },
 
-  // Torrent
-  seedTorrent: (
+  // Room
+  hostRoom: (
     filePath: string,
-    trackerType: "lan" | "localtunnel" | "untun",
-  ) => ipcRenderer.invoke(IPC_CHANNELS.TORRENT.SEED, filePath, trackerType),
-  addTorrent: (magnet: string) =>
-    ipcRenderer.invoke(IPC_CHANNELS.TORRENT.ADD, magnet),
-  checkIsHost: () => ipcRenderer.invoke(IPC_CHANNELS.TORRENT.IS_HOST),
-  getStreamUrl: () => ipcRenderer.invoke(IPC_CHANNELS.TORRENT.GET_STREAM),
-  onTorrentProgress: (callback: (data: TorrentProgress) => void) => {
-    const sub = (_: IpcRendererEvent, data: TorrentProgress) => callback(data);
-    ipcRenderer.on(IPC_CHANNELS.TORRENT.PROGRESS, sub);
-    return () => ipcRenderer.removeListener(IPC_CHANNELS.TORRENT.PROGRESS, sub);
+    hostAccessMode: HostAccessMode,
+  ) => ipcRenderer.invoke(IPC_CHANNELS.ROOM.HOST, filePath, hostAccessMode),
+  joinRoom: (inviteUrl: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.ROOM.JOIN, inviteUrl),
+  isRoomHost: () => ipcRenderer.invoke(IPC_CHANNELS.ROOM.IS_HOST),
+  getRoomStreamUrl: () => ipcRenderer.invoke(IPC_CHANNELS.ROOM.GET_STREAM),
+  onRoomProgress: (callback: (data: RoomProgress) => void) => {
+    const sub = (_: IpcRendererEvent, data: RoomProgress) => callback(data);
+    ipcRenderer.on(IPC_CHANNELS.ROOM.PROGRESS, sub);
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.ROOM.PROGRESS, sub);
   },
 
   // Sync
-  broadcastCommand: (cmd: SyncCommand) =>
-    ipcRenderer.send(IPC_CHANNELS.TORRENT.BROADCAST, cmd),
+  sendSyncCommand: (cmd: SyncCommand) =>
+    ipcRenderer.send(IPC_CHANNELS.ROOM.SEND_SYNC, cmd),
   onSyncCommand: (callback: (cmd: SyncCommand) => void) => {
     const sub = (_: IpcRendererEvent, cmd: SyncCommand) => callback(cmd);
-    ipcRenderer.on(IPC_CHANNELS.SYNC.COMMAND, sub);
-    return () => ipcRenderer.removeListener(IPC_CHANNELS.SYNC.COMMAND, sub);
+    ipcRenderer.on(IPC_CHANNELS.ROOM.SYNC_COMMAND, sub);
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.ROOM.SYNC_COMMAND, sub);
   },
 
-  onTorrentDone: (callback: () => void) => {
+  onRoomReady: (callback: () => void) => {
     const sub = () => callback();
-    ipcRenderer.on(IPC_CHANNELS.TORRENT.DONE, sub);
-    return () => ipcRenderer.removeListener(IPC_CHANNELS.TORRENT.DONE, sub);
+    ipcRenderer.on(IPC_CHANNELS.ROOM.READY, sub);
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.ROOM.READY, sub);
+  },
+
+  onInviteOpened: (callback: (inviteUrl: string) => void) => {
+    const sub = (_: IpcRendererEvent, inviteUrl: string) => callback(inviteUrl);
+    ipcRenderer.on(IPC_CHANNELS.APP.INVITE_OPENED, sub);
+    return () =>
+      ipcRenderer.removeListener(IPC_CHANNELS.APP.INVITE_OPENED, sub);
   },
 
   // Windows

@@ -10,21 +10,19 @@ const Player = lazy(() => import("@routes/Player"));
 
 export default function App() {
   useEffect(() => {
+    const cleanup = window.electronAPI.onInviteOpened((inviteUrl) => {
+      window.location.hash = `#/dashboard?invite=${encodeURIComponent(inviteUrl)}`;
+    });
+
+    return cleanup;
+  }, []);
+
+  useEffect(() => {
     const storedTheme = localStorage.getItem("theme");
-    const storedLegacy = localStorage.getItem("darkMode");
 
     let theme = "lofi";
     if (storedTheme === "lofi" || storedTheme === "lofi-inverted") {
       theme = storedTheme;
-    } else if (
-      storedLegacy === "true" ||
-      storedLegacy === "black" ||
-      storedLegacy === "forest" ||
-      storedLegacy === "lofi-inverted"
-    ) {
-      theme = "lofi-inverted";
-    } else if (storedLegacy === "lofi" || storedLegacy === "false") {
-      theme = "lofi";
     }
 
     localStorage.setItem("theme", theme);

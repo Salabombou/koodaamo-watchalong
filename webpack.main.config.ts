@@ -41,7 +41,6 @@ export const mainConfig: Configuration = {
     extensions: [".js", ".ts", ".jsx", ".tsx", ".css", ".json"],
     conditionNames: ["node", "require", "import", "default"],
     alias: {
-      bitfield$: path.resolve(__dirname, "src/main/bitfield-compat.js"),
       "@shared": path.resolve(__dirname, "src/shared"),
       "@controllers": path.resolve(__dirname, "src/main/controllers"),
       "@protocols": path.resolve(__dirname, "src/main/protocols"),

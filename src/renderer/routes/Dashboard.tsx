@@ -4,7 +4,7 @@ import { SyncCommand } from "@shared/types";
 
 export default function Dashboard() {
   const [searchParams] = useSearchParams();
-  const magnet = searchParams.get("magnet");
+  const invite = searchParams.get("invite");
   const isHost = searchParams.get("host") === "true";
   const initRef = useRef(false);
   const [copied, setCopied] = useState(false);
@@ -20,30 +20,30 @@ export default function Dashboard() {
   const [isReady, setIsReady] = useState(isHost);
 
   useEffect(() => {
-    if (!initRef.current && magnet && !isHost) {
+    if (!initRef.current && invite && !isHost) {
       initRef.current = true;
-      window.electronAPI.addTorrent(magnet);
+      window.electronAPI.joinRoom(invite);
     }
 
     if (isHost) {
       setStats((prev) => ({ ...prev, progress: 1 }));
     }
 
-    const cleanup = window.electronAPI.onTorrentProgress((data) => {
+    const cleanup = window.electronAPI.onRoomProgress((data) => {
       setStats((prev) => ({ ...prev, ...data }));
-      window.electronAPI.broadcastCommand({
+      window.electronAPI.sendSyncCommand({
         type: "progress",
         payload: { percent: data.progress },
         timestamp: Date.now(),
       });
-      if (data.progress > 0 || isHost) {
+      if (data.progress >= 1 || isHost) {
         setIsReady(true);
       }
     });
 
-    const cleanupDone = window.electronAPI.onTorrentDone(() => {
+    const cleanupDone = window.electronAPI.onRoomReady(() => {
       setStats((prev) => ({ ...prev, progress: 1 }));
-      window.electronAPI.broadcastCommand({
+      window.electronAPI.sendSyncCommand({
         type: "progress",
         payload: { percent: 1 },
         timestamp: Date.now(),
@@ -62,17 +62,17 @@ export default function Dashboard() {
       cleanupDone();
       cleanupSync();
     };
-  }, [magnet, isHost]);
+  }, [invite, isHost]);
 
   const startParty = async () => {
     const cmd: SyncCommand = { type: "start-room", timestamp: Date.now() };
-    await window.electronAPI.broadcastCommand(cmd);
+    await window.electronAPI.sendSyncCommand(cmd);
     window.electronAPI.openPlayerWindow();
   };
 
-  const copyMagnet = () => {
-    if (magnet) {
-      navigator.clipboard.writeText(magnet);
+  const copyInvite = () => {
+    if (invite) {
+      navigator.clipboard.writeText(invite);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }
@@ -177,7 +177,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Magnet Link */}
+      {/* Invite Link */}
       <div className="w-full max-w-4xl mb-12">
         <div className="card bg-accent text-accent-content shadow-xl">
           <div className="card-body flex-row items-center gap-4 p-4">
@@ -187,7 +187,7 @@ export default function Dashboard() {
             <div className="flex-1">
               <input
                 readOnly
-                value={magnet || ""}
+                value={invite || ""}
                 className="input w-full bg-base-100 text-base-content font-mono text-sm"
                 onClick={(e) => (e.target as HTMLInputElement).select()}
               />
@@ -199,7 +199,7 @@ export default function Dashboard() {
                 </span>
               )}
               <button
-                onClick={copyMagnet}
+                onClick={copyInvite}
                 className="btn bg-base-100 border-none hover:bg-base-200 text-base-content font-bold"
               >
                 COPY

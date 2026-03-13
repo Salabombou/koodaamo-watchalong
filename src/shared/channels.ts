@@ -2,6 +2,7 @@ export const IPC_CHANNELS = {
   APP: {
     GET_VERSION: "get-node-version",
     RESTART: "update:restart",
+    INVITE_OPENED: "app:invite-opened",
   },
   WINDOW: {
     RESIZE: "window:resize",
@@ -19,18 +20,16 @@ export const IPC_CHANNELS = {
     SEGMENT: "media:segment",
     PROGRESS: "media:progress",
   },
-  TORRENT: {
-    SEED: "torrent:seed",
-    ADD: "torrent:add",
-    IS_HOST: "torrent:is-host",
-    GET_STREAM: "torrent:get-stream",
-    PROGRESS: "torrent:progress",
-    BROADCAST: "torrent:broadcast",
-    DONE: "torrent:done",
-    ERROR: "torrent:error",
-  },
-  SYNC: {
-    COMMAND: "sync:command",
+  ROOM: {
+    HOST: "room:host",
+    JOIN: "room:join",
+    IS_HOST: "room:is-host",
+    GET_STREAM: "room:get-stream",
+    PROGRESS: "room:progress",
+    SEND_SYNC: "room:send-sync",
+    READY: "room:ready",
+    SYNC_COMMAND: "room:sync-command",
+    ERROR: "room:error",
   },
   UPDATE: {
     AVAILABLE: "update:available",

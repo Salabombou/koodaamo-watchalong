@@ -80,7 +80,10 @@ export class RoomService extends EventEmitter {
     this.startServer();
   }
 
-  async hostRoom(filePath: string, hostAccessMode: HostAccessMode): Promise<string> {
+  async hostRoom(
+    filePath: string,
+    hostAccessMode: HostAccessMode,
+  ): Promise<string> {
     if (!this.server || this.streamPort === 0) {
       throw new Error("Host server is not ready");
     }
@@ -216,7 +219,9 @@ export class RoomService extends EventEmitter {
 
     if (!response.ok) {
       const message = await response.text();
-      throw new Error(message || `Failed to send sync event (${response.status})`);
+      throw new Error(
+        message || `Failed to send sync event (${response.status})`,
+      );
     }
   }
 
@@ -324,7 +329,8 @@ export class RoomService extends EventEmitter {
         room.peerLastSeen.set(clientId, Date.now());
 
         const events = await this.waitForEvents(cursor, timeout);
-        const nextCursor = events.length > 0 ? events[events.length - 1].id : cursor;
+        const nextCursor =
+          events.length > 0 ? events[events.length - 1].id : cursor;
 
         this.writeJson(res, {
           events,
@@ -348,7 +354,10 @@ export class RoomService extends EventEmitter {
         return;
       }
 
-      if (pathname.startsWith(`${roomPrefix}/stream/`) && req.method === "GET") {
+      if (
+        pathname.startsWith(`${roomPrefix}/stream/`) &&
+        req.method === "GET"
+      ) {
         const relative = pathname.slice(`${roomPrefix}/stream/`.length);
         this.streamFromRoot(req, res, room.streamRoot, relative);
         return;
@@ -377,7 +386,9 @@ export class RoomService extends EventEmitter {
     }
 
     const roomPrefix = pathname.slice(0, markerIndex);
-    const roomCode = decodeURIComponent(roomPrefix.replace("/local/rooms/", "")).trim();
+    const roomCode = decodeURIComponent(
+      roomPrefix.replace("/local/rooms/", ""),
+    ).trim();
     if (!roomCode) {
       res.statusCode = 404;
       res.end("Room code missing");
@@ -392,7 +403,10 @@ export class RoomService extends EventEmitter {
     }
 
     const suffix = pathname.slice(markerIndex + marker.length);
-    const relativePath = suffix === "" || suffix === "/" ? room.defaultStreamFile : suffix.replace(/^\//, "");
+    const relativePath =
+      suffix === "" || suffix === "/"
+        ? room.defaultStreamFile
+        : suffix.replace(/^\//, "");
 
     this.streamFromRoot(req, res, room.streamRoot, relativePath);
   }
@@ -423,7 +437,8 @@ export class RoomService extends EventEmitter {
     const fileSize = stat.size;
 
     let contentType = "application/octet-stream";
-    if (absolutePath.endsWith(".m3u8")) contentType = "application/vnd.apple.mpegurl";
+    if (absolutePath.endsWith(".m3u8"))
+      contentType = "application/vnd.apple.mpegurl";
     else if (absolutePath.endsWith(".ts")) contentType = "video/mp2t";
     else if (absolutePath.endsWith(".mp4")) contentType = "video/mp4";
     else if (absolutePath.endsWith(".webm")) contentType = "video/webm";
@@ -460,7 +475,10 @@ export class RoomService extends EventEmitter {
     fs.createReadStream(absolutePath, { start, end }).pipe(res);
   }
 
-  private async fetchRoomManifestOrThrow(roomCode: string, remoteBaseUrl: string) {
+  private async fetchRoomManifestOrThrow(
+    roomCode: string,
+    remoteBaseUrl: string,
+  ) {
     const response = await fetch(
       `${remoteBaseUrl}/api/rooms/${encodeURIComponent(roomCode)}/files`,
     );
@@ -473,12 +491,22 @@ export class RoomService extends EventEmitter {
     return (await response.json()) as RoomManifest;
   }
 
-  private async downloadRoomFiles(manifest: RoomManifest, remoteBaseUrl: string) {
-    const downloadRoot = path.join(app.getPath("userData"), "rooms-cache", manifest.roomCode);
+  private async downloadRoomFiles(
+    manifest: RoomManifest,
+    remoteBaseUrl: string,
+  ) {
+    const downloadRoot = path.join(
+      app.getPath("userData"),
+      "rooms-cache",
+      manifest.roomCode,
+    );
     fs.rmSync(downloadRoot, { recursive: true, force: true });
     fs.mkdirSync(downloadRoot, { recursive: true });
 
-    const totalBytes = manifest.files.reduce((sum, entry) => sum + entry.size, 0);
+    const totalBytes = manifest.files.reduce(
+      (sum, entry) => sum + entry.size,
+      0,
+    );
     let downloadedBytes = 0;
     const startedAt = Date.now();
 
@@ -503,7 +531,8 @@ export class RoomService extends EventEmitter {
         downloadedBytes += chunkBytes;
         const elapsedSeconds = Math.max((Date.now() - startedAt) / 1000, 0.001);
         this.emitProgress({
-          progress: totalBytes > 0 ? Math.min(downloadedBytes / totalBytes, 1) : 1,
+          progress:
+            totalBytes > 0 ? Math.min(downloadedBytes / totalBytes, 1) : 1,
           downloadSpeed: downloadedBytes / elapsedSeconds,
           uploadSpeed: 0,
           numPeers: 0,
@@ -551,9 +580,14 @@ export class RoomService extends EventEmitter {
     };
   }
 
-  private listFilesRecursively(rootPath: string, currentRelativePath = ""): RoomFileEntry[] {
+  private listFilesRecursively(
+    rootPath: string,
+    currentRelativePath = "",
+  ): RoomFileEntry[] {
     const currentAbsolutePath = path.join(rootPath, currentRelativePath);
-    const entries = fs.readdirSync(currentAbsolutePath, { withFileTypes: true });
+    const entries = fs.readdirSync(currentAbsolutePath, {
+      withFileTypes: true,
+    });
     const output: RoomFileEntry[] = [];
 
     for (const entry of entries) {
@@ -563,7 +597,9 @@ export class RoomService extends EventEmitter {
       const normalizedRelativePath = relativePath.replace(/\\/g, "/");
 
       if (entry.isDirectory()) {
-        output.push(...this.listFilesRecursively(rootPath, normalizedRelativePath));
+        output.push(
+          ...this.listFilesRecursively(rootPath, normalizedRelativePath),
+        );
         continue;
       }
 
@@ -639,7 +675,7 @@ export class RoomService extends EventEmitter {
       }, clampedTimeout * 1000);
 
       this.on("sync-command", checkEvents);
-      
+
       // Initial check in case events were already added
       checkEvents();
     });
@@ -659,7 +695,9 @@ export class RoomService extends EventEmitter {
         });
         if (!response.ok) {
           const message = await response.text();
-          throw new Error(message || `Long poll failed with ${response.status}`);
+          throw new Error(
+            message || `Long poll failed with ${response.status}`,
+          );
         }
 
         const payload = (await response.json()) as {
@@ -728,12 +766,15 @@ export class RoomService extends EventEmitter {
     const hostname = parsedHost.hostname.toLowerCase();
 
     const isLocalHost =
-      hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+      hostname === "localhost" ||
+      hostname === "127.0.0.1" ||
+      hostname === "::1";
     const isLocalName = hostname.endsWith(".local");
     const isPrivateIPv4 = this.isPrivateIPv4(hostname);
 
     const isTryCloudflare =
-      hostname === "trycloudflare.com" || hostname.endsWith(".trycloudflare.com");
+      hostname === "trycloudflare.com" ||
+      hostname.endsWith(".trycloudflare.com");
     const isLocalTunnel =
       hostname === "loca.lt" ||
       hostname.endsWith(".loca.lt") ||
@@ -751,7 +792,13 @@ export class RoomService extends EventEmitter {
     }
 
     if (protocol === "https:") {
-      if (isLocalHost || isLocalName || isPrivateIPv4 || isTryCloudflare || isLocalTunnel) {
+      if (
+        isLocalHost ||
+        isLocalName ||
+        isPrivateIPv4 ||
+        isTryCloudflare ||
+        isLocalTunnel
+      ) {
         return;
       }
 
@@ -768,7 +815,11 @@ export class RoomService extends EventEmitter {
     if (parts.length !== 4) return false;
 
     const octets = parts.map((value) => Number(value));
-    if (octets.some((value) => !Number.isInteger(value) || value < 0 || value > 255)) {
+    if (
+      octets.some(
+        (value) => !Number.isInteger(value) || value < 0 || value > 255,
+      )
+    ) {
       return false;
     }
 
@@ -832,9 +883,11 @@ export class RoomService extends EventEmitter {
 
   private async startLocaltunnel() {
     const localtunnelModule = (await import("localtunnel")) as {
-      default?: (
-        options: { port: number; host?: string },
-      ) => Promise<{ url?: string; close?: () => void; on?: (...args: unknown[]) => void }>;
+      default?: (options: { port: number; host?: string }) => Promise<{
+        url?: string;
+        close?: () => void;
+        on?: (...args: unknown[]) => void;
+      }>;
     };
 
     const createLocaltunnel = localtunnelModule.default;
@@ -895,9 +948,13 @@ export class RoomService extends EventEmitter {
 
     const normalizedTunnel = tunnelInstance as Record<string, unknown>;
     const urlCandidate =
-      normalizedTunnel.url ?? normalizedTunnel.tunnelUrl ?? normalizedTunnel.publicUrl;
+      normalizedTunnel.url ??
+      normalizedTunnel.tunnelUrl ??
+      normalizedTunnel.publicUrl;
     const closeCandidate =
-      normalizedTunnel.close ?? normalizedTunnel.stop ?? normalizedTunnel.destroy;
+      normalizedTunnel.close ??
+      normalizedTunnel.stop ??
+      normalizedTunnel.destroy;
 
     if (typeof urlCandidate !== "string" || !urlCandidate) {
       throw new Error("Cloudflare tunnel did not return a public URL");
@@ -990,7 +1047,9 @@ export class RoomService extends EventEmitter {
     res.end(json);
   }
 
-  private readJson(req: http.IncomingMessage): Promise<Record<string, unknown>> {
+  private readJson(
+    req: http.IncomingMessage,
+  ): Promise<Record<string, unknown>> {
     return new Promise((resolve, reject) => {
       const chunks: Buffer[] = [];
 

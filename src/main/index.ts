@@ -121,7 +121,10 @@ const createWindow = () => {
 
   mainWindow.webContents.once("did-finish-load", () => {
     if (pendingInvite && mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send(IPC_CHANNELS.APP.INVITE_OPENED, pendingInvite);
+      mainWindow.webContents.send(
+        IPC_CHANNELS.APP.INVITE_OPENED,
+        pendingInvite,
+      );
       pendingInvite = null;
     }
   });

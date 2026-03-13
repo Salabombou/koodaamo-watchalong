@@ -54,10 +54,8 @@ const electronAPI: ElectronAPI = {
   },
 
   // Room
-  hostRoom: (
-    filePath: string,
-    hostAccessMode: HostAccessMode,
-  ) => ipcRenderer.invoke(IPC_CHANNELS.ROOM.HOST, filePath, hostAccessMode),
+  hostRoom: (filePath: string, hostAccessMode: HostAccessMode) =>
+    ipcRenderer.invoke(IPC_CHANNELS.ROOM.HOST, filePath, hostAccessMode),
   joinRoom: (inviteUrl: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.ROOM.JOIN, inviteUrl),
   isRoomHost: () => ipcRenderer.invoke(IPC_CHANNELS.ROOM.IS_HOST),
@@ -74,7 +72,8 @@ const electronAPI: ElectronAPI = {
   onSyncCommand: (callback: (cmd: SyncCommand) => void) => {
     const sub = (_: IpcRendererEvent, cmd: SyncCommand) => callback(cmd);
     ipcRenderer.on(IPC_CHANNELS.ROOM.SYNC_COMMAND, sub);
-    return () => ipcRenderer.removeListener(IPC_CHANNELS.ROOM.SYNC_COMMAND, sub);
+    return () =>
+      ipcRenderer.removeListener(IPC_CHANNELS.ROOM.SYNC_COMMAND, sub);
   },
 
   onRoomReady: (callback: () => void) => {

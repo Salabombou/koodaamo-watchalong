@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Koodaamo Watchalong
+Comment=Serverless peer-to-peer video watchalong
+Exec=KoodaamoWatchalong
+Icon=koodaamo-watchalong
+Categories=AudioVideo;Player;Network;
+Terminal=false

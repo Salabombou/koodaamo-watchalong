@@ -10,6 +10,8 @@ Output:
 
 from pathlib import Path
 
+import os
+
 from PyInstaller.utils.hooks import collect_all
 
 # --- Paths ------------------------------------------------------------------
@@ -23,6 +25,11 @@ ENTRY = SPEC_DIR / "entry.py"
 datas = [(str(UI_DIR), "watchalong/ui")]
 binaries = []
 hiddenimports = ["watchalong"]
+
+# The installer variant bundles a generated marker module so the running app
+# knows it should perform forced auto-updates (see scripts/build-windows.ps1).
+if os.environ.get("WATCHALONG_VARIANT") == "installer":
+    hiddenimports.append("watchalong._build_variant")
 
 for pkg in ("PySide6", "libtorrent"):
     pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)

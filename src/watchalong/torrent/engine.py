@@ -8,6 +8,7 @@ clients have data.
 
 from __future__ import annotations
 
+import base64
 import logging
 import os
 from dataclasses import dataclass
@@ -78,6 +79,7 @@ class TorrentEngine(QObject):
         self._handle: Optional["lt.torrent_handle"] = None
         self._file_index: int = -1
         self._is_seeding: bool = False
+        self._torrent_file: bytes = b""  # full .torrent of the seeded file (host)
 
         self._timer = QTimer(self)
         self._timer.setInterval(1000)
@@ -115,7 +117,9 @@ class TorrentEngine(QObject):
         lt.set_piece_hashes(creator, parent)
 
         entry = creator.generate()
-        info = lt.torrent_info(lt.bdecode(lt.bencode(entry)))
+        torrent_bytes = lt.bencode(entry)
+        info = lt.torrent_info(lt.bdecode(torrent_bytes))
+        self._torrent_file = bytes(torrent_bytes)
 
         params = lt.add_torrent_params()
         params.ti = info
@@ -145,6 +149,34 @@ class TorrentEngine(QObject):
         self._replace_handle(self._ses.add_torrent(params), seeding=False)
         self._file_index = -1  # resolved when metadata arrives
         log.info("Added magnet: %s", magnet[:80])
+
+    def torrent_file_b64(self) -> str:
+        """Return the active torrent's full metadata, base64-encoded (host)."""
+        if not self._torrent_file:
+            return ""
+        return base64.b64encode(self._torrent_file).decode("ascii")
+
+    def add_torrent_metadata(self, meta_b64: str) -> None:
+        """Add a torrent from metadata supplied out-of-band (no swarm fetch)."""
+        raw = base64.b64decode(meta_b64)
+        info = lt.torrent_info(lt.bdecode(raw))
+        params = lt.add_torrent_params()
+        params.ti = info
+        params.save_path = self._download_dir
+        params.flags |= lt.torrent_flags.sequential_download
+
+        self._replace_handle(self._ses.add_torrent(params), seeding=False)
+        self._file_index = self._pick_video_file(info)
+        log.info("Added torrent from embedded metadata: %s", info.name())
+        self.metadata_ready.emit()
+
+    def has_metadata(self) -> bool:
+        if not self.has_active_torrent():
+            return False
+        try:
+            return bool(self._handle.status().has_metadata)
+        except Exception:  # pragma: no cover
+            return False
 
     # --- handle management ---------------------------------------------------
 

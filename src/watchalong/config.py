@@ -7,6 +7,20 @@ import os
 APP_ID = "koodaamo-watchalong"
 APP_VERSION = "0.1.0"
 
+# Build variant: "portable" (default) or "installer" (auto-updating). Installer
+# builds bundle a generated ``_build_variant`` module that overrides this.
+APP_VARIANT = "portable"
+try:  # pragma: no cover - _build_variant exists only in installer builds
+    from ._build_variant import APP_VARIANT as _VARIANT  # type: ignore
+
+    APP_VARIANT = _VARIANT
+except Exception:
+    pass
+
+# GitHub repository queried for forced auto-updates (installer builds only).
+GITHUB_OWNER = "Salabombou"
+GITHUB_REPO = "koodaamo-watchalong"
+
 # Public BitTorrent trackers (no auth). Added to every magnet for reliable peer
 # discovery in addition to the DHT.
 DEFAULT_TRACKERS = [

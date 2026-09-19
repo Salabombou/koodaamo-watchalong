@@ -28,6 +28,71 @@ Rectangle {
         app.startRoom(roomField.text, passField.text, asHost);
     }
 
+    Connections {
+        target: app
+        function onRoomExists(roomCode) {
+            existsDialog.roomCode = roomCode;
+            existsDialog.open();
+        }
+    }
+
+    Dialog {
+        id: existsDialog
+        property string roomCode: ""
+
+        anchors.centerIn: parent
+        modal: true
+        closePolicy: Popup.NoAutoClose
+        padding: Theme.spacingXl
+        width: Math.min(420, joinScreen.width - Theme.spacingXl * 2)
+
+        background: Rectangle {
+            color: Theme.surfaceElevated
+            radius: Theme.radiusLg
+            border.color: Theme.border
+            border.width: 1
+        }
+
+        contentItem: ColumnLayout {
+            spacing: Theme.spacingMd
+
+            Label {
+                text: "Room already exists"
+                color: Theme.text
+                font.pixelSize: Theme.fontTitle
+                font.weight: Font.DemiBold
+            }
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                text: "A room named \u201c" + existsDialog.roomCode + "\u201d is already hosted. Join it instead?"
+                color: Theme.subtext
+                font.pixelSize: Theme.fontBody
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.topMargin: Theme.spacingSm
+                spacing: Theme.spacingMd
+
+                Item { Layout.fillWidth: true }
+
+                Button {
+                    text: "Cancel"
+                    flat: true
+                    onClicked: existsDialog.close()
+                }
+                Button {
+                    text: "Join existing room"
+                    highlighted: true
+                    onClicked: {
+                        existsDialog.close();
+                        app.joinExisting();
+                    }
+                }
+            }
+        }
+    }
+
     Rectangle {
         id: card
         anchors.centerIn: parent

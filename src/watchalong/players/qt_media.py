@@ -50,6 +50,9 @@ class QtMediaPlayer(Player):
     # --- lifecycle -----------------------------------------------------------
 
     def load(self, url: str) -> None:
+        # Stop and clear first so re-loading a new video (served from the same
+        # local URL) always restarts instead of resuming the previous stream.
+        self._player.stop()
         self._player.setSource(QUrl(url))
         self._player.play()
 

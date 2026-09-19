@@ -41,6 +41,32 @@ def _install_signal_handlers(app: QGuiApplication) -> QTimer:
     return wakeup
 
 
+def _run_forced_update_if_needed(app: QGuiApplication) -> bool:
+    """Installer builds only: block on launch to apply a mandatory update.
+
+    Returns ``True`` if an update was launched and the app should exit, or
+    ``False`` to continue starting normally (no update, or the check failed).
+    """
+    try:
+        from .update import check_for_update, UpdateController
+    except Exception:  # pragma: no cover - update deps missing
+        return False
+    info = check_for_update()
+    if info is None:
+        return False
+
+    controller = UpdateController(info)
+    engine = QQmlApplicationEngine()
+    engine.rootContext().setContextProperty("updater", controller)
+    engine.load(os.path.join(_ui_dir(), "Updating.qml"))
+    if not engine.rootObjects():
+        return False
+    controller.finished.connect(app.quit)
+    controller.start()
+    app.exec()
+    return controller.launched
+
+
 def main() -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -53,6 +79,9 @@ def main() -> int:
     app = QGuiApplication(sys.argv)
     app.setApplicationName("Koodaamo Watchalong")
     app.setQuitOnLastWindowClosed(True)
+
+    if _run_forced_update_if_needed(app):
+        return 0
 
     controller = AppController()
 

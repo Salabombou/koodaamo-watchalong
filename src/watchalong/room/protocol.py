@@ -14,12 +14,14 @@ from typing import Any
 
 HELLO = "hello"              # announce presence / who is host
 STATE = "state"             # host -> clients authoritative heartbeat
-SET_MEDIA = "set_media"     # host -> clients new magnet/media selected
+SET_MEDIA = "set_media"     # host -> clients new magnet/media (+ optional meta)
 PLAY = "play"               # play request/command
 PAUSE = "pause"             # pause request/command
 SEEK = "seek"               # seek request/command
 OPTIONS = "options"         # host -> clients room option change
 REQUEST_STATE = "request_state"  # client -> host asks for current state
+PROBE = "probe"             # prospective host -> asks if a host already exists
+HOST_ACK = "host_ack"       # host -> announces it already owns this room
 
 
 def make(type_: str, sender: str, **fields: Any) -> dict[str, Any]:

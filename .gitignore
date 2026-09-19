@@ -13,6 +13,9 @@ build/
 dist/
 *.egg-info/
 
+# Generated at build time by scripts/build-windows.ps1 (installer variant)
+src/watchalong/_build_variant.py
+
 # IDE
 .vscode/
 .idea/

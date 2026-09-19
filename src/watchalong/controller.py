@@ -47,6 +47,8 @@ class AppController(QObject):
     # whole QML binding graph is not re-evaluated several times per second.
     positionChanged = Signal()
     errorOccurred = Signal(str)
+    # Emitted when a user tries to host a room that already has a host.
+    roomExists = Signal(str)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -75,6 +77,9 @@ class AppController(QObject):
         self._position = 0.0
         self._duration = 0.0
         self._volume = 100
+        # Bumped on every media change so the (static) stream URL becomes unique
+        # and players reload instead of resuming the previous video.
+        self._media_token = 0
 
         # progress cache
         self._progress = 0.0
@@ -86,6 +91,17 @@ class AppController(QObject):
         self._heartbeat = QTimer(self)
         self._heartbeat.setInterval(1000)
         self._heartbeat.timeout.connect(self._send_heartbeat)
+
+        # Duplicate-room probe: before claiming host we listen briefly for an
+        # existing host on the same room topic.
+        self._probe_timer = QTimer(self)
+        self._probe_timer.setSingleShot(True)
+        self._probe_timer.setInterval(1800)
+        self._probe_timer.timeout.connect(self._on_probe_timeout)
+        self._probing = False
+        self._wants_host = False
+        self._pending_room_code = ""
+        self._pending_password = ""
 
         # UI refresh timer drives the seek bar / time labels from the player.
         self._ui_timer = QTimer(self)
@@ -192,9 +208,13 @@ class AppController(QObject):
         if self._channel is not None:
             self.leave()
 
-        self._is_host = as_host
-        self._state = RoomState(host_id=self._self_id if as_host else "", options=RoomOptions())
-        self._set_status("Connecting…")
+        self._wants_host = as_host
+        self._is_host = False
+        self._probing = False
+        self._pending_room_code = room_code
+        self._pending_password = password
+        self._state = RoomState(options=RoomOptions())
+        self._set_status("Checking room…" if as_host else "Connecting…")
 
         self._channel = RoomChannel(room_code, password, self)
         self._channel.message_received.connect(self._on_message)
@@ -206,6 +226,11 @@ class AppController(QObject):
         if self._player is None:
             self._select_player_internal(self._player_key)
         self._notify()
+
+    @Slot()
+    def joinExisting(self) -> None:
+        """Join the already-hosted room detected during a host probe (as peer)."""
+        self.startRoom(self._pending_room_code, self._pending_password, False)
 
     @Slot(str)
     def shareFile(self, path: str) -> None:
@@ -224,6 +249,7 @@ class AppController(QObject):
         self._state.media_name = os.path.basename(path)
         self._state.playing = False
         self._state.position = 0.0
+        self._media_token += 1
         self._set_status(f"Sharing: {self._state.media_name}")
         self._load_current_player()
         self._broadcast_set_media()
@@ -282,6 +308,9 @@ class AppController(QObject):
             self._channel = None
         self._heartbeat.stop()
         self._ui_timer.stop()
+        self._probe_timer.stop()
+        self._probing = False
+        self._wants_host = False
         self._connected = False
         self._is_host = False
         self._position = 0.0
@@ -348,7 +377,8 @@ class AppController(QObject):
     def _load_current_player(self) -> None:
         if self._player is None or not self._stream.url:
             return
-        self._player.load(self._stream.url)
+        # Cache-busting token forces a genuine reload when the media changes.
+        self._player.load(f"{self._stream.url}?v={self._media_token}")
         self._player.set_paused(not self._state.playing)
         self._player.set_volume(self._volume)
         if self._state.position > 0:
@@ -415,6 +445,7 @@ class AppController(QObject):
                 self._self_id,
                 magnet=self._state.media_magnet,
                 name=self._state.media_name,
+                meta=self._engine.torrent_file_b64(),
             )
         )
 
@@ -446,6 +477,18 @@ class AppController(QObject):
             return
         msg_type = message.get("t")
 
+        if self._probing:
+            # While probing we only care whether a host already owns the room.
+            if msg_type in (protocol.HOST_ACK, protocol.STATE, protocol.SET_MEDIA):
+                self._on_existing_room_detected()
+            return
+        if msg_type == protocol.PROBE:
+            if self._is_host and self._channel is not None:
+                self._channel.publish(protocol.make(protocol.HOST_ACK, self._self_id))
+            return
+        if msg_type == protocol.HOST_ACK:
+            return
+
         if msg_type == protocol.HELLO:
             if self._is_host and self._state.media_magnet:
                 self._broadcast_set_media()
@@ -474,13 +517,27 @@ class AppController(QObject):
 
     def _handle_set_media(self, message: dict) -> None:
         magnet = message.get("magnet", "")
-        if not magnet or magnet == self._state.media_magnet:
+        if not magnet:
+            return
+        meta = message.get("meta", "")
+        same = magnet == self._state.media_magnet
+        # Nothing to do if we already have this media and its metadata resolved.
+        # If we only had the magnet (slow path) and a metadata blob just arrived,
+        # upgrade to the fast path so the download can actually start.
+        if same and (not meta or self._engine.has_metadata()):
             return
         self._state.media_magnet = magnet
         self._state.media_name = message.get("name", "")
+        if not same:
+            self._state.position = 0.0
+            self._state.playing = False
+            self._media_token += 1
         self._set_status(f"Loading: {self._state.media_name}")
         try:
-            self._engine.add_magnet(magnet)
+            if meta:
+                self._engine.add_torrent_metadata(meta)
+            else:
+                self._engine.add_magnet(magnet)
         except Exception as exc:  # pragma: no cover
             self.errorOccurred.emit(f"Failed to load shared media: {exc}")
         self._notify()
@@ -518,14 +575,54 @@ class AppController(QObject):
     # --- signal handlers -----------------------------------------------------
 
     def _on_channel_connected(self) -> None:
+        if self._wants_host and not self._is_host:
+            # Probe for an existing host before claiming the room.
+            self._probing = True
+            self._set_status("Checking room…")
+            if self._channel is not None:
+                self._channel.publish(protocol.make(protocol.PROBE, self._self_id))
+            self._probe_timer.start()
+            self._notify()
+            return
         self._connected = True
         self._set_status("Connected" if not self._is_host else "Hosting — share a file")
         if self._is_host:
             self._heartbeat.start()
+            if self._channel is not None:
+                self._channel.publish(protocol.make(protocol.HOST_ACK, self._self_id))
         else:
             if self._channel is not None:
                 self._channel.publish(protocol.make(protocol.HELLO, self._self_id))
                 self._channel.publish(protocol.make(protocol.REQUEST_STATE, self._self_id))
+        self._notify()
+
+    def _on_probe_timeout(self) -> None:
+        if not self._probing:
+            return
+        # No existing host answered: claim the room.
+        self._probing = False
+        self._wants_host = False
+        self._is_host = True
+        self._state.host_id = self._self_id
+        self._connected = True
+        self._set_status("Hosting — share a file")
+        self._heartbeat.start()
+        if self._channel is not None:
+            self._channel.publish(protocol.make(protocol.HOST_ACK, self._self_id))
+        self._notify()
+
+    def _on_existing_room_detected(self) -> None:
+        if not self._probing:
+            return
+        self._probing = False
+        self._wants_host = False
+        self._probe_timer.stop()
+        room_code = self._pending_room_code
+        if self._channel is not None:
+            self._channel.stop()
+            self._channel = None
+        self._set_status("Not connected")
+        self.roomExists.emit(room_code)
         self._notify()
 
     def _on_channel_disconnected(self) -> None:

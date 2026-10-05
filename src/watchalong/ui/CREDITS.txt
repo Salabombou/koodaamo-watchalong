@@ -13,3 +13,17 @@ Unmodified SVG files. See icons/LICENSE.txt.
 Typeface: Source Sans 3, SIL Open Font License 1.1.
 https://github.com/google/fonts/tree/main/ofl/sourcesans3
 Unmodified variable TrueType font. See fonts/LICENSE.txt.
+
+Theme generation: materialyoucolor 3.0.4, Ansh Dadwal, MIT license.
+https://github.com/T-Dynamos/materialyoucolor-python
+Material color algorithms and native quantization: Google LLC, Apache 2.0.
+https://github.com/material-foundation/material-color-utilities
+The native extension includes pybind11 (BSD-3-Clause) and stb_image (MIT).
+See licenses/materialyoucolor.txt for the retained notices and licenses.
+
+Image processing: Pillow, MIT-CMU license.
+https://python-pillow.github.io/
+Standalone builds retain the installed Pillow and materialyoucolor distribution
+metadata, including their complete licenses and bundled-library notices.
+Portions of the bundled Pillow libraries are based on the work of the FreeType
+Team (https://freetype.org), under the FreeType License.

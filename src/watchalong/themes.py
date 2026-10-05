@@ -67,8 +67,12 @@ def contrast_warnings(colors: dict) -> list[str]:
         return sum(value * weight for value, weight in zip(linear, (0.2126, 0.7152, 0.0722)))
 
     warnings = []
-    for foreground, background in (("text", "background"), ("subtext", "background"), ("accentText", "accent")):
+    surfaces = ("background", "surface", "surfaceElevated", "surfaceHover")
+    pairs = [(foreground, background, 4.5) for foreground in ("text", "subtext") for background in surfaces]
+    pairs += [("accentText", background, 4.5) for background in ("accent", "accentHover", "accentPressed")]
+    pairs += [(foreground, background, 3.0) for foreground in ("danger", "success", "warning") for background in surfaces]
+    for foreground, background, required in pairs:
         levels = sorted((luminance(colors[foreground]), luminance(colors[background])))
-        if (levels[1] + 0.05) / (levels[0] + 0.05) < 4.5:
-            warnings.append(f"{foreground} / {background}: contrast below 4.5:1")
+        if (levels[1] + 0.05) / (levels[0] + 0.05) < required:
+            warnings.append(f"{foreground} / {background}: contrast below {required:g}:1")
     return warnings

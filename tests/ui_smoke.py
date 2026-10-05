@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import shiboken6
+from PIL import Image
 from PySide6.QtCore import QObject, QPoint, QSize, QTimer, Qt, qInstallMessageHandler
 from PySide6.QtGui import QGuiApplication, QResizeEvent
 from PySide6.QtQml import QQmlApplicationEngine
@@ -15,8 +16,10 @@ from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtTest import QTest
 
 from test_external_players import RecordingPlayer
+from watchalong.app import _ui_dir
 from watchalong.controller import AppController
 from watchalong.settings import SettingsController
+from watchalong.theme_generator import ThemeGenerationController
 
 
 class UiPlayer(RecordingPlayer):
@@ -39,6 +42,7 @@ def run() -> None:
     qInstallMessageHandler(message_handler)
     with tempfile.TemporaryDirectory() as directory:
         preferences = SettingsController(Path(directory) / "settings.json")
+        generator = ThemeGenerationController()
         player = UiPlayer(42.5)
         with patch("watchalong.controller.TorrentEngine"), patch("watchalong.controller.StreamServer") as stream, patch(
             "watchalong.controller.QtMediaPlayer", return_value=player
@@ -48,7 +52,8 @@ def run() -> None:
         engine = QQmlApplicationEngine()
         engine.rootContext().setContextProperty("app", controller)
         engine.rootContext().setContextProperty("preferences", preferences)
-        engine.load(str(Path(__file__).parents[1] / "src/watchalong/ui/Main.qml"))
+        engine.rootContext().setContextProperty("themeGenerator", generator)
+        engine.load(str(Path(_ui_dir()) / "Main.qml"))
         assert engine.rootObjects(), "Main QML did not load"
         window = engine.rootObjects()[0]
 
@@ -96,6 +101,151 @@ def run() -> None:
         settings.close()
         settle()
         screenshot("join-dark")
+
+        def variant(value):
+            return value.toVariant() if hasattr(value, "toVariant") else value
+
+        def wait_for_generation():
+            deadline = time.monotonic() + 10
+            while generator.busy and time.monotonic() < deadline:
+                settle(30)
+            assert not generator.busy, "Theme generation timed out"
+            settle(150)
+
+        settings.open()
+        settle(250)
+        editor = window.findChild(QObject, "themeEditor")
+        editor.edit("Dark", True)
+        settle(250)
+        creation_tabs = window.findChild(QObject, "themeCreationTabs")
+        mode_choice = window.findChild(QObject, "themeModeChoice")
+        name_field = window.findChild(QObject, "themeNameField")
+        save_theme = window.findChild(QObject, "saveGeneratedTheme")
+        assert creation_tabs.property("currentIndex") == 0
+        creation_tabs.setProperty("currentIndex", 1)
+        editor.shuffle()
+        name_field.setProperty("text", "Ocean night")
+        assert generator.busy
+        assert not save_theme.property("enabled")
+        assert window.findChild(QObject, "themeGenerationSpinner").property("running")
+        wait_for_generation()
+        assert not generator.errorMessage, generator.errorMessage
+        random_candidates = variant(editor.property("randomCandidates"))
+        assert len(random_candidates) == 6
+        assert name_field.property("text") == "Ocean night", "Generation replaced the typed name"
+        candidate = visual_item("randomPalette_1")
+        assert candidate is not None
+        screenshot("theme-random-before-selection")
+        QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, click_position(candidate))
+        settle(100)
+        assert preferences.palette == random_candidates[1]["dark"]["colors"], (
+            f"selected={editor.property('selectedSeed')}, expected={random_candidates[1]['seed']}, "
+            f"dark={editor.property('darkMode')}, bounds={candidate.boundingRect()}, point={click_position(candidate)}, "
+            f"editor={editor.property('width')}x{editor.property('height')}, warnings={warnings}"
+        )
+        screenshot("theme-random-dark")
+        mode_choice.setProperty("currentIndex", 1)
+        settle()
+        assert preferences.palette == random_candidates[1]["light"]["colors"], (
+            f"mode={mode_choice.property('currentIndex')}, dark={editor.property('darkMode')}, "
+            f"dirty={editor.property('manualDirty')}, closing={editor.property('closing')}, "
+            f"actual={preferences.palette}, expected={random_candidates[1]['light']['colors']}, warnings={warnings}"
+        )
+        screenshot("theme-random-light")
+        editor.shuffle()
+        wait_for_generation()
+        assert len(variant(editor.property("randomHistory"))) == 1
+        editor.previousBatch()
+        assert variant(editor.property("randomCandidates")) == random_candidates
+        resize(720, 480)
+        screenshot("theme-random-compact")
+        assert save_theme.isVisible()
+        assert click_position(save_theme).y() < editor.property("y") + editor.property("height") - 8, "Save control escaped editor bounds"
+        assert editor.property("y") >= 0 and editor.property("y") + editor.property("height") <= window.height(), "Editor escaped window bounds"
+        resize(1180, 720)
+
+        source_image = Path(directory) / "palette.png"
+        image = Image.new("RGB", (160, 80), "#237A64")
+        image.paste("#DD5533", (0, 0, 60, 80))
+        image.save(source_image)
+        creation_tabs.setProperty("currentIndex", 0)
+        editor.generateImage(source_image.as_uri())
+        wait_for_generation()
+        assert not generator.errorMessage, generator.errorMessage
+        image_candidates = variant(editor.property("imageCandidates"))
+        assert len(image_candidates) >= 2
+        thumbnail = window.findChild(QObject, "themeSourceThumbnail")
+        assert editor.property("imageReady"), "Source thumbnail did not render"
+        assert thumbnail.isVisible()
+        screenshot("theme-image")
+        original_thumbnail = editor.property("imageThumbnail")
+        source_image.unlink()
+        style_choice = window.findChild(QObject, "themeStyleChoice")
+        style_choice.setProperty("currentIndex", 1)
+        editor.regenerate()
+        wait_for_generation()
+        assert not generator.errorMessage, "Style change reread the removed image"
+        assert editor.property("imageThumbnail") == original_thumbnail
+
+        creation_tabs.setProperty("currentIndex", 2)
+        editor.generateColor("#QQQQQQ")
+        wait_for_generation()
+        assert generator.errorMessage
+        screenshot("theme-invalid-color")
+        source_color = window.findChild(QObject, "themeSourceColor")
+        source_color.setProperty("text", "#2E759B")
+        source_color.forceActiveFocus()
+        request_before = generator._request_id
+        QTest.keyClick(window, Qt.Key.Key_End)
+        QTest.keyClick(window, Qt.Key.Key_Backspace)
+        QTest.keyClick(window, Qt.Key.Key_B)
+        settle(350)
+        wait_for_generation()
+        assert not generator.errorMessage, generator.errorMessage
+        assert editor.property("selectedSeed") == "#2E759B"
+        assert generator._request_id == request_before + 2, "Color edit submitted duplicate requests"
+        screenshot("theme-color")
+        creation_tabs.setProperty("currentIndex", 3)
+        editor.setColor("accent", "#CC3366")
+        assert editor.property("manualDirty")
+        assert preferences.palette["accent"] == "#CC3366"
+        screenshot("theme-manual")
+        editor.shuffle()
+        confirmation = window.findChild(QObject, "replaceThemeDraft")
+        settle(350)
+        assert confirmation.property("opened"), f"visible={confirmation.property('visible')}, dirty={editor.property('manualDirty')}, warnings={warnings}"
+        confirmation.reject()
+        settle(350)
+        assert preferences.palette["accent"] == "#CC3366"
+        editor.shuffle()
+        settle(350)
+        confirmation.accept()
+        wait_for_generation()
+        assert not editor.property("manualDirty")
+        assert name_field.property("text") == "Ocean night"
+        QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, click_position(save_theme))
+        settle(300)
+        assert not editor.property("opened")
+        assert preferences.values["themeName"] == "Ocean night"
+        saved_palette = preferences.palette
+        editor.edit("Ocean night", False)
+        settle(200)
+        assert creation_tabs.property("currentIndex") == 3
+        editor.generateColor("#FF3300")
+        editor.close()
+        settle(400)
+        assert not generator.busy
+        assert preferences.palette == saved_palette, "Closed editor accepted a late result"
+        editor.edit("Ocean night", True)
+        settle(200)
+        editor.setColor("accent", "#AA1133")
+        QTest.keyClick(window, Qt.Key.Key_Escape)
+        settle(250)
+        assert not editor.property("opened")
+        assert preferences.palette == saved_palette, "Escape did not restore the selected theme"
+        settings.close()
+        preferences.previewTheme("Dark")
+        settle(250)
 
         controller._player = player
         controller._connected = True
@@ -186,10 +336,12 @@ def run() -> None:
         assert "guest" not in controller._roster.members, "Completed hold did not remove the participant"
 
         shiboken6.delete(engine)
+        generator.shutdown()
+        generator.wait_for_shutdown()
         controller.shutdown()
     qInstallMessageHandler(None)
     assert not warnings, "\n".join(warnings)
-    print("QML screens, responsive layouts, hold cancellation/completion, and countdown pie passed")
+    print("QML screens, quick theme generation, responsive layouts, hold cancellation/completion, and countdown pie passed")
 
 
 if __name__ == "__main__":

@@ -28,7 +28,8 @@ ToolButton {
         forward10: "fast-forward", volume: "volume-2", mute: "volume-x",
         fullscreen: "maximize", fullscreenExit: "minimize", share: "upload",
         options: "settings", leave: "log-out", check: "check", users: "users",
-        more: "ellipsis", close: "x", download: "download", edit: "pencil", film: "film"}[name] || "settings") + ".svg"
+        more: "ellipsis", close: "x", download: "download", edit: "pencil", film: "film",
+        shuffle: "shuffle", back: "arrow-left"}[name] || "settings") + ".svg"
     Accessible.name: text
     onClicked: Sounds.click()
 

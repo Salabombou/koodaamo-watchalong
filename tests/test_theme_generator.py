@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import tempfile
+import base64
+import io
 import threading
 import time
 import unittest
@@ -50,6 +52,7 @@ class ThemeGeneratorTests(unittest.TestCase):
         self.assertEqual(first, generate_random(seed=123))
         self.assertNotEqual(first, generate_random(seed=456))
         self.assertEqual(len({entry["seed"] for entry in first["candidates"]}), 6)
+        self.assertEqual(len({tuple(entry["dark"]["colors"].values()) for entry in first["candidates"]}), 6)
         self.assertEqual(first["thumbnail"], "")
 
     def test_image_extracts_actual_colors_and_thumbnail(self) -> None:
@@ -69,6 +72,15 @@ class ThemeGeneratorTests(unittest.TestCase):
             colors = result["candidates"][0][mode]["colors"]
             for token in ("background", "surface", "accent", "text"):
                 self.assertEqual(len({colors[token][offset:offset + 2] for offset in (1, 3, 5)}), 1)
+
+    def test_image_thumbnail_honors_orientation_and_bounds(self) -> None:
+        source = self.path.with_suffix(".jpg")
+        exif = Image.Exif()
+        exif[274] = 6
+        Image.new("RGB", (800, 400), "red").save(source, exif=exif)
+        result = generate_image(str(source))
+        with Image.open(io.BytesIO(base64.b64decode(result["thumbnail"].split(",", 1)[1]))) as thumbnail:
+            self.assertEqual(thumbnail.size, (128, 256))
 
     def test_transparent_pixels_do_not_pollute_palette(self) -> None:
         image = Image.new("RGBA", (30, 30), (0, 0, 255, 0))
@@ -175,6 +187,24 @@ class ThemeWorkerTests(unittest.TestCase):
         self.assertFalse(self.controller._thread.is_alive())
         self.controller.requestRandom("balanced")
         self.assertFalse(self.controller.busy)
+
+    def test_cancel_after_shutdown_cannot_remove_stop_signal(self) -> None:
+        started = threading.Event()
+        released = threading.Event()
+
+        def controlled(payload, stopped):
+            started.set()
+            released.wait(2)
+            return None
+
+        with patch("watchalong.theme_generator._generate_isolated", side_effect=controlled):
+            self.controller.requestRandom("balanced")
+            self.assertTrue(started.wait(2))
+            self.controller.shutdown()
+            self.controller.cancel()
+            released.set()
+            self.controller.wait_for_shutdown()
+        self.assertFalse(self.controller._thread.is_alive())
 
     def test_isolated_worker_timeout(self) -> None:
         with self.assertRaises(TimeoutError):

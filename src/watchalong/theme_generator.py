@@ -97,7 +97,7 @@ def generate_theme(seed: str, dark: bool, style: str = "balanced") -> dict:
 
 
 def generate_candidate(seed: str, style: str = "balanced", population: int = 0) -> dict:
-    return {"seed": opaque_hex(color_argb(seed)), "population": population,
+    return {"seed": opaque_hex(color_argb(seed)), "population": population, "style": style,
             "dark": generate_theme(seed, True, style), "light": generate_theme(seed, False, style)}
 
 
@@ -107,9 +107,11 @@ def generate_random(style: str = "balanced", seed: int | None = None) -> dict:
     used = set()
     while len(candidates) < 6:
         color = opaque_hex(Hct.from_hct(generator.uniform(0, 360), generator.uniform(36, 72), generator.uniform(45, 65)).to_int())
-        if color not in used:
-            candidates.append(generate_candidate(color, style))
-            used.add(color)
+        candidate = generate_candidate(color, style)
+        signature = tuple(candidate["dark"]["colors"].values()) + tuple(candidate["light"]["colors"].values())
+        if signature not in used:
+            candidates.append(candidate)
+            used.add(signature)
     return {"candidates": candidates, "thumbnail": ""}
 
 
@@ -266,6 +268,8 @@ class ThemeGenerationController(QObject):
 
     @Slot()
     def cancel(self) -> None:
+        if self._closed:
+            return
         self._cancelled.set()
         self._request_id += 1
         self._discard_pending()
@@ -302,8 +306,12 @@ class ThemeGenerationController(QObject):
         if self._closed:
             return
         self._closed = True
-        self.cancel()
+        self._cancelled.set()
+        self._discard_pending()
+        self._busy = False
+        self._error = ""
         self._jobs.put_nowait(None)
+        self.changed.emit()
 
     def wait_for_shutdown(self) -> None:
         self._thread.join(3)

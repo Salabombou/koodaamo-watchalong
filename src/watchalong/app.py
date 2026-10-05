@@ -14,6 +14,7 @@ from PySide6.QtQuickControls2 import QQuickStyle
 
 from .controller import AppController
 from .settings import SettingsController
+from .theme_generator import ThemeGenerationController
 
 
 def _ui_dir() -> str:
@@ -88,20 +89,28 @@ def main() -> int:
         return 0
 
     controller = AppController(settings=preferences)
+    generator = ThemeGenerationController()
 
     engine = QQmlApplicationEngine()
     engine.rootContext().setContextProperty("app", controller)
     engine.rootContext().setContextProperty("preferences", preferences)
+    engine.rootContext().setContextProperty("themeGenerator", generator)
 
     qml_path = os.path.join(_ui_dir(), "Main.qml")
     engine.load(qml_path)
     if not engine.rootObjects():
         logging.getLogger(__name__).error("Failed to load QML: %s", qml_path)
+        generator.shutdown()
+        generator.wait_for_shutdown()
         return 1
 
     app.aboutToQuit.connect(controller.shutdown)
+    app.aboutToQuit.connect(generator.shutdown)
     _wakeup = _install_signal_handlers(app)  # noqa: F841 - keep alive
-    return app.exec()
+    result = app.exec()
+    generator.shutdown()
+    generator.wait_for_shutdown()
+    return result
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from watchalong.settings import SettingsController
+from watchalong.theme_generator import generate_theme
 from watchalong.themes import BUILTINS, contrast_warnings, validate_theme
 
 
@@ -93,6 +94,32 @@ class SettingsTests(unittest.TestCase):
         self.settings.cancelPreview()
         self.assertTrue(self.settings.isDark)
 
+    def test_generated_theme_roundtrip_contains_only_portable_theme_data(self) -> None:
+        self.settings.save({"username": "Alice"}, True)
+        document = generate_theme("#2E759B", False, "vivid")
+        document["name"] = "Ocean"
+        self.assertTrue(self.settings.previewDocument(document))
+        self.assertEqual(self.settings.values["themeName"], "Dark")
+        self.settings.cancelPreview()
+        self.assertEqual(self.settings.palette, BUILTINS["Dark"]["colors"])
+        self.assertTrue(self.settings.saveTheme(document))
+        exported = self.path.parent / "ocean.json"
+        self.assertTrue(self.settings.exportTheme("Ocean", str(exported)))
+        result = json.loads(exported.read_text())
+        self.assertEqual(set(result), {"format", "version", "name", "isDark", "colors"})
+        self.assertEqual(result, document)
+        self.settings.removeTheme("Ocean")
+        self.assertTrue(self.settings.importTheme(str(exported)))
+        self.assertEqual(self.settings.palette, document["colors"])
+
+    def test_contrast_warnings_cover_surface_and_accent_states(self) -> None:
+        colors = deepcopy(BUILTINS["Dark"]["colors"])
+        colors["surfaceHover"] = colors["text"]
+        colors["accentPressed"] = colors["accentText"]
+        warnings = contrast_warnings(colors)
+        self.assertTrue(any("text / surfaceHover" in message for message in warnings))
+        self.assertTrue(any("accentText / accentPressed" in message for message in warnings))
+
     def test_builtins_cannot_be_overwritten_or_deleted(self) -> None:
         self.assertFalse(self.settings.saveTheme(BUILTINS["Dark"]))
         self.assertFalse(self.settings.removeTheme("Light"))
@@ -122,6 +149,9 @@ class SettingsTests(unittest.TestCase):
         directory = Path(__file__).parents[1] / "src/watchalong/ui"
         for folder in ("sounds", "fonts", "icons"):
             self.assertTrue((directory / folder / "LICENSE.txt").is_file())
+        notices = (directory / "licenses/materialyoucolor.txt").read_text(encoding="utf-8")
+        for attribution in ("Ansh Dadwal", "Google LLC", "Wenzel Jakob", "Sean Barrett"):
+            self.assertIn(attribution, notices)
         sounds = list((directory / "sounds").glob("*.wav"))
         self.assertEqual(len(sounds), 7)
         for source in sounds:

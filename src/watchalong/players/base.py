@@ -58,6 +58,12 @@ class Player:
     def get_duration(self) -> float:
         return 0.0
 
+    def is_loaded(self) -> bool:
+        return True
+
+    def get_error(self) -> str:
+        return ""
+
     def set_volume(self, percent: float) -> None:
         pass
 

@@ -29,7 +29,10 @@ class QtMediaPlayer(Player):
         self._player.setAudioOutput(self._audio)
         self._player.positionChanged.connect(self._on_position_changed)
         self._player.errorOccurred.connect(self._on_error)
+        self._player.mediaStatusChanged.connect(self._on_media_status)
         self._video_item: QObject | None = None
+        self._error = ""
+        self._pending_seek: float | None = None
 
     @classmethod
     def is_available(cls) -> bool:
@@ -52,9 +55,10 @@ class QtMediaPlayer(Player):
     def load(self, url: str) -> None:
         # Stop and clear first so re-loading a new video (served from the same
         # local URL) always restarts instead of resuming the previous stream.
+        self._error = ""
+        self._pending_seek = None
         self._player.stop()
         self._player.setSource(QUrl(url))
-        self._player.play()
 
     def play(self) -> None:
         self._player.play()
@@ -69,6 +73,9 @@ class QtMediaPlayer(Player):
             self._player.play()
 
     def seek(self, seconds: float) -> None:
+        if not self.is_loaded():
+            self._pending_seek = max(0.0, seconds)
+            return
         self._player.setPosition(int(max(0.0, seconds) * 1000))
 
     def get_position(self) -> float:
@@ -76,6 +83,17 @@ class QtMediaPlayer(Player):
 
     def get_duration(self) -> float:
         return self._player.duration() / 1000.0
+
+    def is_loaded(self) -> bool:
+        return self._player.mediaStatus() in (
+            QMediaPlayer.MediaStatus.LoadedMedia,
+            QMediaPlayer.MediaStatus.BufferingMedia,
+            QMediaPlayer.MediaStatus.BufferedMedia,
+            QMediaPlayer.MediaStatus.EndOfMedia,
+        )
+
+    def get_error(self) -> str:
+        return self._error
 
     def set_volume(self, percent: float) -> None:
         self._audio.setVolume(max(0.0, min(1.0, percent / 100.0)))
@@ -92,6 +110,13 @@ class QtMediaPlayer(Player):
     def _on_position_changed(self, ms: int) -> None:
         self._emit_position(ms / 1000.0)
 
+    def _on_media_status(self, status: QMediaPlayer.MediaStatus) -> None:
+        if self.is_loaded() and self._pending_seek is not None:
+            target = self._pending_seek
+            self._pending_seek = None
+            self.seek(target)
+
     def _on_error(self, error: QMediaPlayer.Error, error_string: str = "") -> None:
         if error != QMediaPlayer.Error.NoError:
+            self._error = error_string or str(error)
             log.warning("Qt Multimedia player error: %s", error_string or error)

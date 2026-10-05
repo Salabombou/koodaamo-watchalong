@@ -7,10 +7,17 @@ and does not require any Python VLC bindings.
 
 from __future__ import annotations
 
+import configparser
 import logging
+import math
 import os
+import queue
 import shutil
+import socket
 import subprocess
+import threading
+import time
+from pathlib import Path
 from typing import Optional
 
 import requests
@@ -20,12 +27,21 @@ from .base import Player
 log = logging.getLogger(__name__)
 
 _HTTP_HOST = "127.0.0.1"
-_HTTP_PORT = 18080
 
 
 def _find_vlc() -> Optional[str]:
     found = shutil.which("vlc")
     if found:
+        shim = Path(found).with_suffix(".shim")
+        if shim.is_file():
+            try:
+                metadata = configparser.ConfigParser(interpolation=None)
+                metadata.read_string("[shim]\n" + shim.read_text(encoding="utf-8-sig"))
+                binary = metadata.get("shim", "path", fallback="").strip('"')
+                if os.path.isfile(binary):
+                    return binary
+            except (OSError, UnicodeError, configparser.Error):
+                pass
         return found
     candidates = [
         r"C:\Program Files\VideoLAN\VLC\vlc.exe",
@@ -36,40 +52,20 @@ def _find_vlc() -> Optional[str]:
     return next((c for c in candidates if os.path.exists(c)), None)
 
 
-class VlcExternalPlayer(Player):
-    key = "vlc"
-    label = "VLC (external)"
-
-    def __init__(self) -> None:
-        super().__init__()
+class _VlcWorker:
+    def __init__(self, binary: str, url: str) -> None:
+        self._binary = binary
+        self._url = url
         self._process: Optional[subprocess.Popen] = None
         self._password = os.urandom(8).hex()
         self._session = requests.Session()
-        self._base = f"http://{_HTTP_HOST}:{_HTTP_PORT}/requests"
-        self._position = 0.0
-        self._length = 0.0
-
-    @classmethod
-    def is_available(cls) -> bool:
-        return _find_vlc() is not None
-
-    def _ensure_process(self, url: str) -> None:
-        if self._process is not None and self._process.poll() is None:
-            return
-        binary = _find_vlc()
-        if binary is None:
-            raise RuntimeError("VLC executable not found")
-        args = [
-            binary,
-            "--extraintf", "http",
-            "--http-host", _HTTP_HOST,
-            "--http-port", str(_HTTP_PORT),
-            "--http-password", self._password,
-            "--no-video-title-show",
-            url,
-        ]
-        log.info("Launching VLC: %s", binary)
-        self._process = subprocess.Popen(args)
+        self._base = ""
+        self.commands: queue.Queue[dict] = queue.Queue()
+        self.stopped = threading.Event()
+        self.snapshot = (0.0, 0.0)
+        self.media_ready = False
+        self.error = ""
+        self.thread = threading.Thread(target=self._run, name="vlc-http")
 
     def _status(self, params: Optional[dict] = None) -> Optional[dict]:
         try:
@@ -77,51 +73,135 @@ class VlcExternalPlayer(Player):
                 f"{self._base}/status.json",
                 params=params,
                 auth=("", self._password),
-                timeout=2,
+                timeout=(0.3, 0.5),
             )
             if response.ok:
-                return response.json()
-        except requests.RequestException:
-            return None
+                status = response.json()
+                if isinstance(status, dict):
+                    position = float(status.get("time", 0.0))
+                    duration = float(status.get("length", 0.0))
+                    if math.isfinite(position) and math.isfinite(duration):
+                        self.snapshot = (max(0.0, position), max(0.0, duration))
+                    return status
+        except (requests.RequestException, ValueError, TypeError):
+            pass
         return None
 
+    def _run(self) -> None:
+        try:
+            with socket.socket() as listener:
+                listener.bind((_HTTP_HOST, 0))
+                port = listener.getsockname()[1]
+            self._base = f"http://{_HTTP_HOST}:{port}/requests"
+            args = [
+                self._binary,
+                "--extraintf", "http",
+                "--http-host", _HTTP_HOST,
+                "--http-port", str(port),
+                "--http-password", self._password,
+                "--no-one-instance",
+                "--start-paused",
+                "--no-video-title-show",
+                self._url,
+            ]
+            log.info("Launching VLC: %s", self._binary)
+            self._process = subprocess.Popen(args)
+            deadline = time.monotonic() + 10.0
+            while not self.stopped.is_set():
+                if self._process.poll() is not None:
+                    raise RuntimeError("VLC exited before its control interface was ready")
+                if self._status() is not None:
+                    break
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("VLC control interface did not become available")
+                self.stopped.wait(0.05)
+
+            while not self.stopped.is_set():
+                if self._process.poll() is not None:
+                    raise RuntimeError("VLC was closed")
+                if not self.media_ready:
+                    self._status()
+                    self.media_ready = self.snapshot[1] > 0
+                    if not self.media_ready:
+                        self.stopped.wait(0.05)
+                        continue
+                try:
+                    command = self.commands.get(timeout=0.05)
+                except queue.Empty:
+                    command = None
+                if command is not None:
+                    self._status(command)
+                else:
+                    self._status()
+                    self.stopped.wait(0.2)
+        except Exception as exc:
+            self.error = str(exc)
+            log.warning("VLC worker failed: %s", exc)
+        finally:
+            self.stopped.set()
+            if self._process is not None and self._process.poll() is None:
+                try:
+                    self._process.terminate()
+                    self._process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    self._process.kill()
+                    self._process.wait(timeout=1)
+                except OSError:
+                    log.debug("Error terminating VLC", exc_info=True)
+            self._session.close()
+
+
+class VlcExternalPlayer(Player):
+    key = "vlc"
+    label = "VLC (external)"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._worker: Optional[_VlcWorker] = None
+
+    @classmethod
+    def is_available(cls) -> bool:
+        return _find_vlc() is not None
+
+    def _command(self, params: dict) -> None:
+        if self._worker is not None and not self._worker.stopped.is_set():
+            self._worker.commands.put(params)
+
     def load(self, url: str) -> None:
-        if self._process is None or self._process.poll() is not None:
-            self._ensure_process(url)
-        else:
-            self._status({"command": "in_play", "input": url})
+        binary = _find_vlc()
+        if binary is None:
+            raise RuntimeError("VLC executable not found")
+        self.shutdown()
+        self._worker = _VlcWorker(binary, url)
+        self._worker.thread.start()
 
     def play(self) -> None:
-        # pl_forceresume avoids toggling into pause if already playing.
-        self._status({"command": "pl_forceresume"})
+        self._command({"command": "pl_forceresume"})
 
     def pause(self) -> None:
-        self._status({"command": "pl_forcepause"})
+        self._command({"command": "pl_forcepause"})
 
     def seek(self, seconds: float) -> None:
-        self._status({"command": "seek", "val": str(int(seconds))})
+        self._command({"command": "seek", "val": str(max(0.0, float(seconds)))})
 
     def get_position(self) -> float:
-        status = self._status()
-        if status is None:
-            return self._position
-        self._position = float(status.get("time", 0.0))
-        self._length = float(status.get("length", 0.0))
-        return self._position
+        return self._worker.snapshot[0] if self._worker is not None else 0.0
 
     def get_duration(self) -> float:
-        return self._length
+        return self._worker.snapshot[1] if self._worker is not None else 0.0
+
+    def is_loaded(self) -> bool:
+        return self._worker is not None and self._worker.media_ready and not self._worker.stopped.is_set()
+
+    def get_error(self) -> str:
+        return self._worker.error if self._worker is not None else ""
 
     def set_volume(self, percent: float) -> None:
         # VLC HTTP volume is 0-256 for 0-100%.
         val = int(max(0.0, min(100.0, float(percent))) / 100.0 * 256)
-        self._status({"command": "volume", "val": str(val)})
+        self._command({"command": "volume", "val": str(val)})
 
     def shutdown(self) -> None:
-        if self._process is not None and self._process.poll() is None:
-            try:
-                self._status({"command": "pl_stop"})
-                self._process.terminate()
-            except Exception:  # pragma: no cover
-                log.debug("Error terminating VLC", exc_info=True)
-        self._process = None
+        if self._worker is not None:
+            self._worker.stopped.set()
+            self._worker = None

@@ -73,6 +73,7 @@ class AppController(QObject):
         self._external: dict[str, Player] = {}
         self._player: Optional[Player] = None
         self._player_key = self._default_player_key()
+        self._player_error = ""
         self._local_position = 0.0
         self._position = 0.0
         self._duration = 0.0
@@ -362,6 +363,12 @@ class AppController(QObject):
             self.errorOccurred.emit(f"Player '{key}' is not available")
             return
         previous = self._player
+        if previous is new_player:
+            return
+        if not new_player.is_available():
+            self.errorOccurred.emit(f"Player '{key}' is not available")
+            return
+        handoff_position = self._current_position()
         if previous is not None and previous is not new_player and previous is not self._builtin:
             previous.shutdown()
         elif previous is self._builtin and previous is not new_player and previous is not None:
@@ -369,27 +376,35 @@ class AppController(QObject):
 
         self._player = new_player
         self._player_key = key
+        self._player_error = ""
+        self._local_position = handoff_position
         self._player.set_position_callback(self._on_local_position)
         self._player.set_volume(self._volume)
         if self._state.media_magnet and self._stream.url:
-            self._load_current_player()
+            self._load_current_player(handoff_position)
 
-    def _load_current_player(self) -> None:
+    def _load_current_player(self, position: float | None = None) -> None:
         if self._player is None or not self._stream.url:
             return
         # Cache-busting token forces a genuine reload when the media changes.
-        self._player.load(f"{self._stream.url}?v={self._media_token}")
-        self._player.set_paused(not self._state.playing)
-        self._player.set_volume(self._volume)
-        if self._state.position > 0:
-            self._player.seek(self._state.position)
+        try:
+            self._player.load(f"{self._stream.url}?v={self._media_token}")
+            self._player.set_volume(self._volume)
+            target = self._state.position if position is None else position
+            self._local_position = target
+            if target > 0:
+                self._player.seek(target)
+            self._player.set_paused(not self._state.playing)
+        except Exception as exc:
+            self.errorOccurred.emit(f"Failed to load player: {exc}")
         self._ui_timer.start()
 
     def _on_local_position(self, seconds: float) -> None:
-        self._local_position = seconds
+        if self._player is not None and self._player.is_loaded():
+            self._local_position = seconds
 
     def _current_position(self) -> float:
-        if self._player is not None:
+        if self._player is not None and self._player.is_loaded():
             try:
                 return self._player.get_position()
             except Exception:  # pragma: no cover
@@ -405,8 +420,14 @@ class AppController(QObject):
         return self._duration
 
     def _refresh_playback(self) -> None:
+        if self._player is not None:
+            error = self._player.get_error()
+            if error and error != self._player_error:
+                self._player_error = error
+                self.errorOccurred.emit(f"{self._player.label}: {error}")
         position = self._current_position()
         duration = self._current_duration()
+        self._local_position = position
         if position != self._position or duration != self._duration:
             self._position = position
             self._duration = duration

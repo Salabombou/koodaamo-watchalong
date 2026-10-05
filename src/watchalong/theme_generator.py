@@ -2,10 +2,17 @@ from __future__ import annotations
 
 import base64
 import io
+import multiprocessing
+import queue
 import random
+import re
+import threading
+import time
+from multiprocessing.connection import Connection
 from pathlib import Path
 
 from PIL import Image, ImageCms, ImageOps, UnidentifiedImageError
+from PySide6.QtCore import QObject, Property, Qt, Signal, Slot
 from materialyoucolor.contrast.contrast import Contrast
 from materialyoucolor.dynamiccolor.material_dynamic_colors import MaterialDynamicColors
 from materialyoucolor.hct.hct import Hct
@@ -19,6 +26,7 @@ from materialyoucolor.scheme.scheme_vibrant import SchemeVibrant
 from materialyoucolor.score.score import Score, ScoreOptions
 
 from . import themes
+from .settings import local_path
 
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_IMAGE_PIXELS = 24_000_000
@@ -36,7 +44,7 @@ def opaque_hex(argb: int) -> str:
 
 
 def color_argb(color: str) -> int:
-    if not isinstance(color, str) or len(color) != 7 or not color.startswith("#"):
+    if not isinstance(color, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
         raise ValueError("Choose a color in #RRGGBB format")
     try:
         return 0xFF000000 | int(color[1:], 16)
@@ -135,3 +143,167 @@ def generate_image(path: str, style: str = "balanced") -> dict:
     seeds = list(dict.fromkeys([*ranked, *sorted(populations, key=populations.get, reverse=True)]))[:6]
     return {"candidates": [generate_candidate(opaque_hex(color), style, populations.get(color, 0)) for color in seeds],
             "thumbnail": "data:image/png;base64," + base64.b64encode(preview.getvalue()).decode("ascii")}
+
+
+def _generate_payload(payload: dict) -> dict:
+    style = payload["style"]
+    if payload["kind"] == "image":
+        return generate_image(payload["path"], style)
+    if payload["kind"] == "random":
+        return generate_random(style)
+    if payload["kind"] == "color":
+        return {"candidates": [generate_candidate(payload["color"], style)], "thumbnail": ""}
+    return {"candidates": [generate_candidate(entry["seed"], style, entry.get("population", 0))
+                           for entry in payload["seeds"]], "thumbnail": ""}
+
+
+def _generation_process(payload: dict, output: Connection) -> None:
+    try:
+        output.send((True, _generate_payload(payload)))
+    except Exception as exc:
+        output.send((False, str(exc)))
+    finally:
+        output.close()
+
+
+def _generate_isolated(payload: dict, stopped: threading.Event, timeout: float = 30.0) -> dict | None:
+    if stopped.is_set():
+        return None
+    context = multiprocessing.get_context("spawn")
+    receiver, sender = context.Pipe(duplex=False)
+    process = context.Process(target=_generation_process, args=(payload, sender), daemon=True)
+    deadline = time.monotonic() + timeout
+    try:
+        process.start()
+        sender.close()
+        while not stopped.is_set():
+            if receiver.poll(0.05):
+                try:
+                    success, result = receiver.recv()
+                except EOFError as exc:
+                    raise RuntimeError("Palette generation stopped unexpectedly") from exc
+                if not success:
+                    raise ValueError(result)
+                return result
+            if not process.is_alive():
+                raise RuntimeError("Palette generation stopped unexpectedly")
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Palette generation took too long; try a smaller image")
+        return None
+    finally:
+        if process.pid is not None:
+            process.join(0.2)
+            if process.is_alive():
+                process.terminate()
+                process.join(1)
+            if process.is_alive():
+                process.kill()
+                process.join()
+            process.close()
+        receiver.close()
+        sender.close()
+
+
+class ThemeGenerationController(QObject):
+    changed = Signal()
+    resultReady = Signal("QVariantMap")
+    _completed = Signal(int, object, str)
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._busy = False
+        self._error = ""
+        self._request_id = 0
+        self._cancelled = threading.Event()
+        self._closed = False
+        self._jobs: queue.Queue = queue.Queue(maxsize=1)
+        self._thread = threading.Thread(target=self._supervise, name="theme-generation", daemon=True)
+        self._completed.connect(self._deliver, Qt.ConnectionType.QueuedConnection)
+        self._thread.start()
+
+    @Property(bool, notify=changed)
+    def busy(self) -> bool:
+        return self._busy
+
+    @Property(str, notify=changed)
+    def errorMessage(self) -> str:
+        return self._error
+
+    def _discard_pending(self) -> None:
+        try:
+            self._jobs.get_nowait()
+        except queue.Empty:
+            pass
+
+    def _request(self, payload: dict) -> None:
+        if self._closed:
+            return
+        self._cancelled.set()
+        self._request_id += 1
+        self._cancelled = threading.Event()
+        self._discard_pending()
+        self._busy = True
+        self._error = ""
+        self._jobs.put_nowait((self._request_id, payload, self._cancelled))
+        self.changed.emit()
+
+    @Slot(str, str)
+    def requestImage(self, path: str, style: str) -> None:
+        self._request({"kind": "image", "path": str(local_path(path)), "style": style})
+
+    @Slot(str)
+    def requestRandom(self, style: str) -> None:
+        self._request({"kind": "random", "style": style})
+
+    @Slot(str, str)
+    def requestColor(self, color: str, style: str) -> None:
+        self._request({"kind": "color", "color": color, "style": style})
+
+    @Slot("QVariantList", str)
+    def requestSeeds(self, seeds: list, style: str) -> None:
+        self._request({"kind": "seeds", "seeds": [{"seed": entry["seed"], "population": entry.get("population", 0)}
+                                                  for entry in seeds[:6]], "style": style})
+
+    @Slot()
+    def cancel(self) -> None:
+        self._cancelled.set()
+        self._request_id += 1
+        self._discard_pending()
+        self._busy = False
+        self._error = ""
+        self.changed.emit()
+
+    def _supervise(self) -> None:
+        while True:
+            job = self._jobs.get()
+            if job is None:
+                return
+            request_id, payload, stopped = job
+            try:
+                result = _generate_isolated(payload, stopped)
+                if result is not None and not self._closed:
+                    self._completed.emit(request_id, result, "")
+            except Exception as exc:
+                if not self._closed:
+                    self._completed.emit(request_id, None, str(exc))
+
+    @Slot(int, object, str)
+    def _deliver(self, request_id: int, result: dict | None, error: str) -> None:
+        if self._closed or request_id != self._request_id:
+            return
+        self._busy = False
+        self._error = error
+        self.changed.emit()
+        if result is not None:
+            self.resultReady.emit(result)
+
+    @Slot()
+    def shutdown(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self.cancel()
+        self._jobs.put_nowait(None)
+
+    def wait_for_shutdown(self) -> None:
+        self._thread.join(3)

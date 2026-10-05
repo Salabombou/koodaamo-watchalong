@@ -23,7 +23,8 @@ QtObject {
     readonly property color success: palette.success
     readonly property color warning: palette.warning
     readonly property color overlayScrim: palette.overlayScrim
-    readonly property string fontFamily: "Segoe UI"
+    readonly property string fontFamily: uiFont.name
+    property FontLoader uiFont: FontLoader { source: "fonts/SourceSans3.ttf" }
 
     // --- Spacing -------------------------------------------------------------
     readonly property int spacingXs: 4

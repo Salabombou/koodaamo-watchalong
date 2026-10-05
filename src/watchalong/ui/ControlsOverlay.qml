@@ -8,15 +8,11 @@ Item {
     id: overlay
     implicitHeight: layout.implicitHeight + Theme.spacingLg * 2
 
-    readonly property bool canPause: app.isHost || app.allowPause
-    readonly property bool canSeek: app.isHost || app.allowSeek
+    readonly property bool canSeek: (app.isHost || app.allowSeek) && !app.selfIgnored && !app.transferring
 
     Rectangle {
         anchors.fill: parent
-        gradient: Gradient {
-            GradientStop { position: 0.0; color: "transparent" }
-            GradientStop { position: 1.0; color: Theme.withAlpha(Theme.background, 0.92) }
-        }
+        color: Theme.surface
     }
 
     // Absorb clicks so they don't reach the play/pause layer beneath.
@@ -41,12 +37,21 @@ Item {
             Layout.fillWidth: true
             spacing: Theme.spacingXs
 
-            IconButton {
-                name: app.playing ? "pause" : "play"
-                iconSize: 24
-                enabled: overlay.canPause && app.hasMedia
-                text: app.playing ? "Pause" : "Play"
-                onClicked: app.playing ? app.pausePressed() : app.playPressed()
+            Button {
+                objectName: "readyButton"
+                text: app.selfIgnored ? "Ignored" : app.selfReady ? "Unready" : "Ready"
+                implicitWidth: 108
+                Layout.minimumWidth: 108
+                implicitHeight: 44
+                leftPadding: 12
+                rightPadding: 12
+                enabled: app.canReady
+                highlighted: app.selfReady
+                icon.source: app.selfReady ? "icons/pause.svg" : "icons/play.svg"
+                icon.color: app.selfReady ? Theme.accentText : Theme.text
+                onClicked: app.toggleReady()
+                ToolTip.visible: hovered && app.selfIgnored
+                ToolTip.text: "The host has ignored you"
             }
             IconButton {
                 name: "back10"
@@ -64,9 +69,10 @@ Item {
 
             Label {
                 text: Theme.fmtTime(app.position) + "  /  " + Theme.fmtTime(app.duration)
+                visible: overlay.width >= 740
                 color: Theme.subtext
                 font.pixelSize: Theme.fontCaption
-                font.family: "monospace"
+                font.family: Theme.fontFamily
                 Layout.leftMargin: Theme.spacingSm
             }
 
@@ -76,11 +82,13 @@ Item {
 
             ComboBox {
                 id: playerCombo
-                Layout.preferredWidth: 168
+                Layout.preferredWidth: overlay.width < 700 ? 118 : 156
                 model: app.availablePlayers
                 textRole: "label"
                 valueRole: "key"
+                displayText: currentValue === "vlc" ? "VLC" : currentValue === "mpv" ? "mpv" : "Built-in"
                 Component.onCompleted: currentIndex = indexOfValue(app.playerKey)
+                Connections { target: app; function onChanged() { playerCombo.currentIndex = playerCombo.indexOfValue(app.playerKey); } }
                 onActivated: app.selectPlayer(currentValue)
 
                 delegate: ItemDelegate {
@@ -107,16 +115,10 @@ Item {
                     y: -implicitHeight - Theme.spacingSm
 
                     MenuItem {
-                        text: "Clients can pause"
-                        checkable: true
-                        checked: app.allowPause
-                        onToggled: app.setOptions(checked, app.allowSeek)
-                    }
-                    MenuItem {
                         text: "Clients can seek"
                         checkable: true
                         checked: app.allowSeek
-                        onToggled: app.setOptions(app.allowPause, checked)
+                        onToggled: app.setOptions(false, checked)
                     }
                 }
             }

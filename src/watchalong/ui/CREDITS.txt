@@ -1,0 +1,15 @@
+Interface sounds: Kenney, Interface Sounds (2020), Creative Commons CC0 1.0.
+https://kenney.nl/assets/interface-sounds
+https://creativecommons.org/publicdomain/zero/1.0/
+Selected original OGG files converted to mono 44.1 kHz PCM WAV:
+click_001, confirmation_001, back_001, tick_001, open_001, close_001, error_001.
+The original pack license is retained in sounds/LICENSE.txt.
+
+Icons: Lucide, ISC license (including Feather portions under MIT).
+https://lucide.dev/
+https://github.com/lucide-icons/lucide
+Unmodified SVG files. See icons/LICENSE.txt.
+
+Typeface: Source Sans 3, SIL Open Font License 1.1.
+https://github.com/google/fonts/tree/main/ofl/sourcesans3
+Unmodified variable TrueType font. See fonts/LICENSE.txt.

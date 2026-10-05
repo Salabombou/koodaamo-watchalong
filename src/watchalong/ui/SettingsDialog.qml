@@ -20,6 +20,9 @@ Dialog {
     width: Math.min(650, parent.width - 32)
     height: Math.min(640, parent.height - 32)
     padding: 20
+    background: Rectangle { color: Theme.surface; radius: 8; border.color: Theme.border }
+    header: Label { text: settingsDialog.title; color: Theme.text; font.pixelSize: 22; padding: 20; bottomPadding: 12 }
+    Overlay.modal: Rectangle { color: Theme.overlayScrim }
     closePolicy: firstRun ? Popup.NoAutoClose : Popup.CloseOnEscape
     onOpened: {
         var values = preferences.values;
@@ -62,9 +65,14 @@ Dialog {
         nameFilters: ["Watchalong theme (*.json)"]
         onAccepted: preferences.exportTheme(settingsDialog.themeName, selectedFile.toString())
     }
-    ThemeEditor { id: themeEditor; onClosed: settingsDialog.themeName = preferences.values.themeName }
+    ThemeEditor {
+        id: themeEditor
+        onSaved: settingsDialog.themeName = preferences.values.themeName
+        onClosed: preferences.previewTheme(settingsDialog.themeName)
+    }
     Dialog {
         id: deleteDialog
+        background: Rectangle { color: Theme.surface; radius: 8; border.color: Theme.border }
         title: "Delete " + settingsDialog.themeName + "?"
         anchors.centerIn: parent
         modal: true

@@ -6,17 +6,19 @@ import QtMultimedia
 
 Rectangle {
     id: playerScreen
-    color: "black"
+    color: isBuiltin && app.hasMedia ? "black" : Theme.background
 
-    readonly property bool canPause: app.isHost || app.allowPause
-    readonly property bool canSeek: app.isHost || app.allowSeek
+    readonly property bool canSeek: (app.isHost || app.allowSeek) && !app.selfIgnored && !app.transferring
     readonly property bool isBuiltin: app.playerKey === "builtin"
     readonly property bool loading: app.playerLoading
+    readonly property bool wide: width >= 1000 && !ApplicationWindow.window.isFullscreen
+    property bool roomOpen: true
+    readonly property int panelWidth: wide && roomOpen ? 280 : 0
 
     property bool userActive: true
     property bool hoveringControls: topHover.hovered || bottomHover.hovered
     readonly property bool controlsVisible: userActive || hoveringControls
-                                            || !app.playing || !app.hasMedia
+                                            || !app.playing || !app.hasMedia || !ApplicationWindow.window.isFullscreen
 
     opacity: 0
     Component.onCompleted: opacity = 1
@@ -27,8 +29,8 @@ Rectangle {
         hideTimer.restart();
     }
     function togglePlay() {
-        if (canPause && app.hasMedia)
-            app.playing ? app.pausePressed() : app.playPressed();
+        if (app.canReady)
+            app.toggleReady();
     }
     function seekRel(delta) {
         if (!canSeek || !app.hasMedia)
@@ -58,16 +60,18 @@ Rectangle {
     VideoOutput {
         id: video
         objectName: "video"
-        anchors.fill: parent
+        anchors { left: parent.left; right: parent.right; top: topBar.bottom; bottom: controls.top }
+        anchors.rightMargin: playerScreen.panelWidth
         fillMode: VideoOutput.PreserveAspectFit
         visible: playerScreen.isBuiltin
-        Component.onCompleted: app.setVideoItem(this)
+        Component.onCompleted: Qt.callLater(() => app.setVideoItem(video))
     }
 
     // --- Activity / click layer (above the video, below the UI) --------------
     MouseArea {
         id: activity
         anchors.fill: parent
+        anchors.rightMargin: playerScreen.panelWidth
         hoverEnabled: true
         cursorShape: playerScreen.controlsVisible ? Qt.ArrowCursor : Qt.BlankCursor
         onPositionChanged: playerScreen.reveal()
@@ -90,6 +94,7 @@ Rectangle {
     // Placeholder shown for external players or when nothing is loaded.
     ColumnLayout {
         anchors.centerIn: parent
+        anchors.horizontalCenterOffset: -playerScreen.panelWidth / 2
         width: Math.min(parent.width - Theme.spacingXxl * 2, 420)
         spacing: Theme.spacingLg
         visible: !playerScreen.loading && app.playerError.length === 0
@@ -132,10 +137,12 @@ Rectangle {
 
     ColumnLayout {
         anchors.centerIn: parent
+        anchors.horizontalCenterOffset: -playerScreen.panelWidth / 2
         width: Math.min(420, parent.width - 48)
         spacing: Theme.spacingMd
         visible: playerScreen.loading
-        BusyIndicator {
+        LoadingSpinner {
+            objectName: "playerLoadingSpinner"
             running: playerScreen.loading
             Layout.alignment: Qt.AlignHCenter
         }
@@ -151,6 +158,7 @@ Rectangle {
 
     ColumnLayout {
         anchors.centerIn: parent
+        anchors.horizontalCenterOffset: -playerScreen.panelWidth / 2
         width: Math.min(420, parent.width - 48)
         spacing: Theme.spacingMd
         visible: app.playerError.length > 0
@@ -176,6 +184,11 @@ Rectangle {
     TopBar {
         id: topBar
         anchors { top: parent.top; left: parent.left; right: parent.right }
+        anchors.rightMargin: playerScreen.panelWidth
+        onParticipantsRequested: {
+            if (playerScreen.wide) playerScreen.roomOpen = !playerScreen.roomOpen;
+            else roomDrawer.open();
+        }
         opacity: playerScreen.controlsVisible ? 1 : 0
         visible: opacity > 0
         Behavior on opacity { NumberAnimation { duration: Theme.durNormal } }
@@ -185,10 +198,36 @@ Rectangle {
     ControlsOverlay {
         id: controls
         anchors { bottom: parent.bottom; left: parent.left; right: parent.right }
+        anchors.rightMargin: playerScreen.panelWidth
         opacity: playerScreen.controlsVisible ? 1 : 0
         visible: opacity > 0
         Behavior on opacity { NumberAnimation { duration: Theme.durNormal } }
         HoverHandler { id: bottomHover }
+    }
+
+    ParticipantsPanel {
+        anchors { right: parent.right; top: parent.top; bottom: parent.bottom }
+        width: playerScreen.panelWidth
+        visible: width > 0
+    }
+    Drawer {
+        id: roomDrawer
+        width: Math.min(320, playerScreen.width - 48)
+        height: playerScreen.height
+        edge: Qt.RightEdge
+        ParticipantsPanel { anchors.fill: parent }
+    }
+    CountdownOverlay {
+        anchors.centerIn: parent
+        anchors.horizontalCenterOffset: -playerScreen.panelWidth / 2
+        z: 20
+    }
+    ColumnLayout {
+        anchors.centerIn: parent
+        anchors.horizontalCenterOffset: -playerScreen.panelWidth / 2
+        visible: app.syncLoading && !app.playerLoading
+        LoadingSpinner { running: parent.visible; Layout.alignment: Qt.AlignHCenter }
+        Label { text: "Synchronizing with host..."; color: Theme.text }
     }
 
     // --- Keyboard shortcuts --------------------------------------------------
@@ -200,4 +239,5 @@ Rectangle {
     Shortcut { sequence: "F"; onActivated: ApplicationWindow.window.toggleFullscreen() }
     Shortcut { sequence: "Escape"; onActivated: ApplicationWindow.window.exitFullscreen() }
     Shortcut { sequence: "M"; onActivated: playerScreen.toggleMute() }
+    Shortcut { sequence: "P"; onActivated: playerScreen.wide ? playerScreen.roomOpen = !playerScreen.roomOpen : roomDrawer.open() }
 }

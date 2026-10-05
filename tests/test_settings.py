@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+import wave
 from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
@@ -95,6 +96,42 @@ class SettingsTests(unittest.TestCase):
     def test_builtins_cannot_be_overwritten_or_deleted(self) -> None:
         self.assertFalse(self.settings.saveTheme(BUILTINS["Dark"]))
         self.assertFalse(self.settings.removeTheme("Light"))
+
+    def test_unsaved_color_preview_is_live_and_reversible(self) -> None:
+        document = self.custom_theme()
+        document["colors"]["accent"] = "#ffcc33"
+        self.assertTrue(self.settings.previewDocument(document))
+        self.assertEqual(self.settings.palette["accent"], "#FFCC33")
+        self.assertEqual(self.settings.values["themeName"], "Dark")
+        self.assertFalse(self.path.exists())
+        document["colors"]["accent"] = "not a color"
+        self.assertFalse(self.settings.previewDocument(document))
+        self.settings.cancelPreview()
+        self.assertEqual(self.settings.palette["accent"], BUILTINS["Dark"]["colors"]["accent"])
+
+    def test_missing_old_player_path_does_not_block_unrelated_preferences(self) -> None:
+        executable = self.path.parent / "player.exe"
+        executable.touch()
+        executable.chmod(0o755)
+        self.assertTrue(self.settings.save({"username": "Alice", "mpvPath": str(executable)}, True))
+        executable.unlink()
+        self.assertTrue(self.settings.save({"defaultPlayer": "builtin", "soundsEnabled": False}))
+        self.assertFalse(self.settings.save({"mpvPath": str(executable)}))
+
+    def test_bundled_assets_have_licenses_and_valid_wav_data(self) -> None:
+        directory = Path(__file__).parents[1] / "src/watchalong/ui"
+        for folder in ("sounds", "fonts", "icons"):
+            self.assertTrue((directory / folder / "LICENSE.txt").is_file())
+        sounds = list((directory / "sounds").glob("*.wav"))
+        self.assertEqual(len(sounds), 7)
+        for source in sounds:
+            with wave.open(str(source)) as sound:
+                self.assertEqual(sound.getnchannels(), 1)
+                self.assertEqual(sound.getsampwidth(), 2)
+                self.assertEqual(sound.getframerate(), 44100)
+                self.assertGreater(sound.getnframes(), 0)
+                self.assertLess(sound.getnframes(), 44100)
+        self.assertGreater((directory / "fonts/SourceSans3.ttf").stat().st_size, 100000)
 
 
 if __name__ == "__main__":

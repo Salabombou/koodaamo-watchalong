@@ -26,7 +26,8 @@ RowLayout {
 
     Slider {
         id: slider
-        Layout.preferredWidth: 96
+        Layout.preferredWidth: 80
+        visible: vol.parent.width >= 700
         from: 0
         to: 100
         value: app.volume

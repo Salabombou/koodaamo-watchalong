@@ -6,6 +6,7 @@ import QtQuick.Layouts
 Item {
     id: topBar
     implicitHeight: 64
+    signal participantsRequested()
 
     component Chip: Rectangle {
         property alias text: chipLabel.text
@@ -25,10 +26,7 @@ Item {
 
     Rectangle {
         anchors.fill: parent
-        gradient: Gradient {
-            GradientStop { position: 0.0; color: Theme.withAlpha(Theme.background, 0.85) }
-            GradientStop { position: 1.0; color: "transparent" }
-        }
+        color: Theme.surface
     }
 
     // Absorb clicks so they don't reach the play/pause layer beneath.
@@ -42,18 +40,22 @@ Item {
 
         ColumnLayout {
             Layout.fillWidth: true
+            Layout.minimumWidth: 0
             spacing: 0
             Label {
                 text: app.mediaName.length > 0 ? app.mediaName
                       : (app.isHost ? "No file shared yet" : "Waiting for host…")
+                    textFormat: Text.PlainText
                 color: Theme.text
                 font.pixelSize: Theme.fontSubtitle
                 font.weight: Font.DemiBold
                 elide: Text.ElideRight
                 Layout.fillWidth: true
+                Layout.minimumWidth: 0
             }
             Label {
-                text: app.isHost ? "You are hosting" : "Connected to host"
+                    text: app.phase === "countdown" ? "Starting together..."
+                        : app.playing ? "Playing together" : app.readyCount + "/" + app.requiredCount + " ready"
                 color: Theme.subtext
                 font.pixelSize: Theme.fontCaption
             }
@@ -61,12 +63,18 @@ Item {
 
         Row {
             spacing: Theme.spacingSm
-            visible: app.hasMedia
+            visible: app.hasMedia && topBar.width >= 1050
             Layout.alignment: Qt.AlignVCenter
 
             Chip { text: app.peers + (app.peers === 1 ? " peer" : " peers") }
             Chip { text: "\u2193 " + app.downRateText }
             Chip { text: "\u2191 " + app.upRateText }
+        }
+
+        IconButton {
+            name: "users"
+            text: "Participants"
+            onClicked: topBar.participantsRequested()
         }
 
         IconButton {

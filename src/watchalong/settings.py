@@ -161,7 +161,11 @@ class SettingsController(QObject):
                     data[key] = values[key]
             if finish_setup:
                 data["firstRunDone"] = True
-            self._persist(self._validate(data))
+            data = self._validate(data, check_paths=False)
+            for key in ("mpvPath", "vlcPath"):
+                if key in values:
+                    data[key] = executable_path(data[key])
+            self._persist(data)
             return True
         except (OSError, ValueError, TypeError) as exc:
             self.errorOccurred.emit(str(exc))
@@ -203,6 +207,15 @@ class SettingsController(QObject):
     def cancelPreview(self) -> None:
         self._preview = None
         self.changed.emit()
+
+    @Slot("QVariantMap", result=bool)
+    def previewDocument(self, document: dict) -> bool:
+        try:
+            self._preview = themes.validate_theme(document)
+            self.changed.emit()
+            return True
+        except (ValueError, TypeError):
+            return False
 
     @Slot(str, result="QVariantMap")
     def themeDocument(self, name: str) -> dict:

@@ -32,4 +32,4 @@ watchalong = "watchalong.app:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-watchalong = ["ui/*.qml", "ui/qmldir"]
+watchalong = ["ui/*.qml", "ui/qmldir", "ui/*.txt", "ui/icons/*", "ui/fonts/*", "ui/sounds/*"]

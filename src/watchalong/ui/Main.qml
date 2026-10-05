@@ -24,6 +24,9 @@ ApplicationWindow {
 
     function openSettings() { settingsDialog.open(); }
     SettingsDialog { id: settingsDialog }
+    property bool lastConnected: false
+    property bool lastReady: false
+    property bool lastPlaying: false
 
     readonly property bool isFullscreen: visibility === Window.FullScreen
 
@@ -66,9 +69,22 @@ ApplicationWindow {
     Connections {
         target: app
         function onErrorOccurred(message) {
+            Sounds.error();
             toast.message = message;
             toast.shown = true;
             toastTimer.restart();
+        }
+        function onChanged() {
+            if (root.lastConnected !== app.connected) {
+                app.connected ? Sounds.joined() : Sounds.left();
+                root.lastConnected = app.connected;
+            }
+            if (root.lastReady !== app.selfReady) {
+                app.selfReady ? Sounds.ready() : Sounds.unready();
+                root.lastReady = app.selfReady;
+            }
+            if (!root.lastPlaying && app.playing) Sounds.ready();
+            root.lastPlaying = app.playing;
         }
     }
 

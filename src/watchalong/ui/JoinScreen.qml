@@ -21,19 +21,9 @@ Rectangle {
     Component.onCompleted: opacity = 1
     Behavior on opacity { NumberAnimation { duration: Theme.durSlow; easing.type: Easing.OutCubic } }
 
-    // Subtle accent glow behind the card.
-    Rectangle {
-        anchors.centerIn: card
-        width: card.width * 1.6
-        height: card.height * 1.6
-        radius: width / 2
-        gradient: Gradient {
-            GradientStop { position: 0.0; color: Theme.withAlpha(Theme.accent, 0.22) }
-            GradientStop { position: 1.0; color: "transparent" }
-        }
-    }
 
     function submit(asHost) {
+        Sounds.click();
         app.startRoom(roomField.text, passField.text, asHost);
     }
 
@@ -108,9 +98,9 @@ Rectangle {
         width: Math.min(440, joinScreen.width - Theme.spacingXl * 2)
         height: content.implicitHeight + Theme.spacingXxl * 2
         radius: Theme.radiusLg
-        color: Theme.surfaceElevated
+        color: "transparent"
         border.color: Theme.border
-        border.width: 1
+        border.width: 0
 
         ColumnLayout {
             id: content
@@ -126,15 +116,12 @@ Rectangle {
                     Layout.alignment: Qt.AlignHCenter
                     spacing: Theme.spacingSm
 
-                    Rectangle {
-                        implicitWidth: 12; implicitHeight: 12; radius: 6
-                        color: Theme.accent
-                        Layout.alignment: Qt.AlignVCenter
-                    }
+                    IconButton { name: "film"; enabled: false; opacity: 1; iconSize: 28 }
                     Label {
                         text: "Koodaamo Watchalong"
                         color: Theme.text
-                        font.pixelSize: Theme.fontTitle
+                        font.pixelSize: Theme.fontHeadline
+                        textFormat: Text.PlainText
                         font.weight: Font.DemiBold
                     }
                 }
@@ -159,6 +146,7 @@ Rectangle {
                 }
                 TextField {
                     id: roomField
+                    maximumLength: 64
                     Layout.fillWidth: true
                     placeholderText: "e.g. movie-night"
                     selectByMouse: true
@@ -196,12 +184,14 @@ Rectangle {
                     flat: true
                     Layout.fillWidth: true
                     onClicked: joinScreen.submit(false)
+                    enabled: roomField.text.trim().length > 0
                 }
                 Button {
                     text: "Host room"
                     highlighted: true
                     Layout.fillWidth: true
                     onClicked: joinScreen.submit(true)
+                    enabled: roomField.text.trim().length > 0
                 }
             }
 
@@ -211,7 +201,7 @@ Rectangle {
                 spacing: Theme.spacingSm
                 visible: app.statusText.length > 0 && app.statusText !== "Not connected"
 
-                BusyIndicator {
+                LoadingSpinner {
                     running: app.statusText.indexOf("Connecting") === 0
                     visible: running
                     implicitWidth: 18

@@ -8,12 +8,16 @@ Dialog {
     objectName: "themeEditor"
     property var document: ({})
     property string selectedToken: ""
+    signal saved()
     modal: true
     title: "Custom theme"
     width: Math.min(560, parent.width - 32)
     height: Math.min(640, parent.height - 32)
     anchors.centerIn: parent
     padding: 20
+    background: Rectangle { color: Theme.surface; radius: 8; border.color: Theme.border }
+    header: Label { text: editor.title; color: Theme.text; font.pixelSize: 22; padding: 20; bottomPadding: 12 }
+    Overlay.modal: Rectangle { color: Theme.overlayScrim }
     standardButtons: Dialog.NoButton
 
     function edit(name, duplicate) {
@@ -22,11 +26,19 @@ Dialog {
         nameField.text = document.name;
         darkControl.checked = document.isDark;
         open();
+        preview();
     }
     function setColor(token, value) {
         var next = JSON.parse(JSON.stringify(document));
         next.colors[token] = value;
         document = next;
+        preview();
+    }
+
+    function preview() {
+        var next = JSON.parse(JSON.stringify(document));
+        next.isDark = darkControl.checked;
+        preferences.previewDocument(next);
     }
 
     ColorDialog {
@@ -43,7 +55,7 @@ Dialog {
             maximumLength: 32
             Accessible.name: "Theme name"
         }
-        Switch { id: darkControl; text: "Dark control style" }
+        Switch { id: darkControl; text: "Dark control style"; onToggled: editor.preview() }
         ScrollView {
             Layout.fillWidth: true
             Layout.fillHeight: true
@@ -95,8 +107,10 @@ Dialog {
                     var next = JSON.parse(JSON.stringify(editor.document));
                     next.name = nameField.text.trim();
                     next.isDark = darkControl.checked;
-                    if (preferences.saveTheme(next))
+                    if (preferences.saveTheme(next)) {
+                        editor.saved();
                         editor.close();
+                    }
                 }
             }
         }

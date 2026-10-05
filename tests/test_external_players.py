@@ -485,10 +485,14 @@ class PlayerSwitchTests(unittest.TestCase):
     def test_loading_player_keeps_handoff_position(self) -> None:
         self.external.loaded = False
         self.controller.selectPlayer("vlc")
+        self.assertTrue(self.controller.playerLoading)
         self.external.position = 0.0
         self.controller._on_local_position(0.0)
         self.controller._refresh_playback()
         self.assertEqual(self.controller.currentPosition(), 42.5)
+        self.external.loaded = True
+        self.controller._refresh_playback()
+        self.assertFalse(self.controller.playerLoading)
 
     def test_player_error_is_reported_once(self) -> None:
         errors: list[str] = []
@@ -499,6 +503,8 @@ class PlayerSwitchTests(unittest.TestCase):
         self.controller._refresh_playback()
         self.assertEqual(len(errors), 1)
         self.assertIn("Control connection failed", errors[0])
+        self.assertFalse(self.controller.playerLoading)
+        self.assertEqual(self.controller.playerError, "Control connection failed")
 
     def test_unavailable_player_keeps_current_player(self) -> None:
         self.external.is_available = lambda: False
@@ -513,6 +519,7 @@ class PlayerSwitchTests(unittest.TestCase):
         self.controller.selectPlayer("vlc")
         self.assertEqual(len(errors), 1)
         self.assertIn("Executable not found", errors[0])
+        self.assertFalse(self.controller.playerLoading)
 
 
 @unittest.skipUnless(os.environ.get("WATCHALONG_NATIVE_PLAYERS") == "1", "Native player tests are opt-in")

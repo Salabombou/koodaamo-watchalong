@@ -74,6 +74,7 @@ class AppController(QObject):
         self._player: Optional[Player] = None
         self._player_key = self._default_player_key()
         self._player_error = ""
+        self._player_loading = False
         self._local_position = 0.0
         self._position = 0.0
         self._duration = 0.0
@@ -162,6 +163,14 @@ class AppController(QObject):
     @Property(str, notify=changed)
     def playerKey(self) -> str:
         return self._player_key
+
+    @Property(bool, notify=changed)
+    def playerLoading(self) -> bool:
+        return self._player_loading
+
+    @Property(str, notify=changed)
+    def playerError(self) -> str:
+        return self._player_error
 
     @Property(float, notify=positionChanged)
     def position(self) -> float:
@@ -262,6 +271,10 @@ class AppController(QObject):
         self._select_player_internal(key)
         self._notify()
 
+    @Slot()
+    def retryPlayer(self) -> None:
+        self._load_current_player(self._local_position)
+
     @Slot(result=float)
     def currentPosition(self) -> float:
         return self._current_position()
@@ -316,6 +329,8 @@ class AppController(QObject):
         self._is_host = False
         self._position = 0.0
         self._duration = 0.0
+        self._player_loading = False
+        self._player_error = ""
         self._set_status("Not connected")
         self._notify()
 
@@ -386,6 +401,9 @@ class AppController(QObject):
     def _load_current_player(self, position: float | None = None) -> None:
         if self._player is None or not self._stream.url:
             return
+        self._player_error = ""
+        self._player_loading = True
+        self._notify()
         # Cache-busting token forces a genuine reload when the media changes.
         try:
             self._player.load(f"{self._stream.url}?v={self._media_token}")
@@ -396,7 +414,10 @@ class AppController(QObject):
                 self._player.seek(target)
             self._player.set_paused(not self._state.playing)
         except Exception as exc:
+            self._player_error = str(exc)
+            self._player_loading = False
             self.errorOccurred.emit(f"Failed to load player: {exc}")
+            self._notify()
         self._ui_timer.start()
 
     def _on_local_position(self, seconds: float) -> None:
@@ -424,7 +445,12 @@ class AppController(QObject):
             error = self._player.get_error()
             if error and error != self._player_error:
                 self._player_error = error
+                self._player_loading = False
                 self.errorOccurred.emit(f"{self._player.label}: {error}")
+                self._notify()
+            elif self._player_loading and self._player.is_loaded():
+                self._player_loading = False
+                self._notify()
         position = self._current_position()
         duration = self._current_duration()
         self._local_position = position

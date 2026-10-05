@@ -11,7 +11,7 @@ Rectangle {
     readonly property bool canPause: app.isHost || app.allowPause
     readonly property bool canSeek: app.isHost || app.allowSeek
     readonly property bool isBuiltin: app.playerKey === "builtin"
-    readonly property bool loading: isBuiltin && app.hasMedia && app.duration <= 0
+    readonly property bool loading: app.playerLoading
 
     property bool userActive: true
     property bool hoveringControls: topHover.hovered || bottomHover.hovered
@@ -92,7 +92,8 @@ Rectangle {
         anchors.centerIn: parent
         width: Math.min(parent.width - Theme.spacingXxl * 2, 420)
         spacing: Theme.spacingLg
-        visible: !app.hasMedia || !playerScreen.isBuiltin
+        visible: !playerScreen.loading && app.playerError.length === 0
+             && (!app.hasMedia || !playerScreen.isBuiltin)
 
         Rectangle {
             Layout.alignment: Qt.AlignHCenter
@@ -129,9 +130,9 @@ Rectangle {
         }
     }
 
-    // Buffering indicator while the built-in player fetches metadata.
     ColumnLayout {
         anchors.centerIn: parent
+        width: Math.min(420, parent.width - 48)
         spacing: Theme.spacingMd
         visible: playerScreen.loading
         BusyIndicator {
@@ -139,10 +140,35 @@ Rectangle {
             Layout.alignment: Qt.AlignHCenter
         }
         Label {
-            text: app.statusText
+            text: playerScreen.isBuiltin ? "Loading media..."
+                  : "Opening " + (app.playerKey === "vlc" ? "VLC" : "mpv") + "..."
+            textFormat: Text.PlainText
             color: Theme.subtext
             font.pixelSize: Theme.fontBody
             Layout.alignment: Qt.AlignHCenter
+        }
+    }
+
+    ColumnLayout {
+        anchors.centerIn: parent
+        width: Math.min(420, parent.width - 48)
+        spacing: Theme.spacingMd
+        visible: app.playerError.length > 0
+        Label {
+            text: "Player could not open"
+            color: Theme.text
+            font.pixelSize: Theme.fontSubtitle
+        }
+        Label {
+            text: app.playerError
+            textFormat: Text.PlainText
+            color: Theme.subtext
+            wrapMode: Text.WordWrap
+            Layout.fillWidth: true
+        }
+        RowLayout {
+            Button { text: "Retry"; onClicked: app.retryPlayer() }
+            Button { text: "Use built-in"; onClicked: app.selectPlayer("builtin") }
         }
     }
 

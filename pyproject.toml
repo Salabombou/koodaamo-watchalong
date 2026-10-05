@@ -16,6 +16,8 @@ dependencies = [
     "cryptography>=42.0",
     "requests>=2.31",
     "pywin32>=306; sys_platform == 'win32'",
+    "materialyoucolor==3.0.4",
+    "Pillow>=11.3,<13",
 ]
 
 [project.optional-dependencies]

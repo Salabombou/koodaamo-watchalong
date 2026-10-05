@@ -98,9 +98,23 @@ git push origin v0.3.0
 - Settings includes Dark and Light presets, named custom themes with live
   color preview, JSON import/export, reduced motion, and sound mute/volume.
   Theme exports contain only theme data, not profile information or player paths.
+- Create themes from a local image, a newly generated harmonious random palette,
+  or one source color. Choose dark/light and Balanced, Vivid, Expressive, or Muted,
+  then refine individual colors in Manual. Shuffle offers six new candidates and
+  a previous-batch action; image swatches remain available without rereading the file.
+- Image processing is local and cancellable: PNG, JPEG, WebP, BMP, and GIF (first
+  frame), up to 20 MiB and 24 million pixels. Images, paths, and generation history
+  are never uploaded or included in saved/exported themes. Closing the editor
+  restores the previous selection; replacing manual edits requires confirmation.
+- Theme generation uses materialyoucolor's Material color algorithms and Pillow,
+  rather than custom color science. Generated text and accent-button states target
+  4.5:1 contrast against theme surfaces; manual themes show nonblocking warnings.
 - Interface audio is from Kenney's CC0 Interface Sounds. Lucide SVG icons use
   ISC/MIT licenses and Source Sans 3 uses OFL 1.1. See
   [asset credits](src/watchalong/ui/CREDITS.txt) and the adjacent license files.
+  Standalone builds also include dependency license metadata. Portions of the
+  bundled Pillow libraries are based on the work of the FreeType Team
+  (https://freetype.org), under the FreeType License.
 
 ## Checks
 

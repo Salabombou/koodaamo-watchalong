@@ -12,7 +12,7 @@ from pathlib import Path
 
 import os
 
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, copy_metadata
 
 # --- Paths ------------------------------------------------------------------
 SPEC_DIR = Path(SPECPATH)  # noqa: F821 - injected by PyInstaller
@@ -23,6 +23,7 @@ ENTRY = SPEC_DIR / "entry.py"
 
 # --- Collect dependencies that ship data / plugins / native libraries -------
 datas = [(str(UI_DIR), "watchalong/ui")]
+datas += copy_metadata("Pillow") + copy_metadata("materialyoucolor")
 binaries = []
 hiddenimports = ["watchalong"]
 

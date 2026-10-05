@@ -82,6 +82,9 @@ class _VlcWorker:
                 if isinstance(status, dict):
                     position = float(status.get("time", 0.0))
                     duration = float(status.get("length", 0.0))
+                    fraction = status.get("position")
+                    if isinstance(fraction, (int, float)) and not isinstance(fraction, bool) and 0 <= fraction <= 1 and duration > 0:
+                        position = float(fraction) * duration
                     if math.isfinite(position) and math.isfinite(duration):
                         self.snapshot = (max(0.0, position), max(0.0, duration))
                     return status

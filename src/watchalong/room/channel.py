@@ -71,14 +71,14 @@ class RoomChannel(QObject):
     def publish(self, message: dict[str, Any]) -> None:
         try:
             payload = crypto.encrypt(self._key, json.dumps(message).encode("utf-8"))
-            self._client.publish(self._topic, payload, qos=0)
+            self._client.publish(self._topic, payload, qos=1)
         except Exception:  # pragma: no cover
             log.exception("Failed to publish message")
 
     # --- paho callbacks (run on the MQTT network thread) ---------------------
 
     def _on_connect(self, client, userdata, flags, reason_code, properties=None) -> None:
-        client.subscribe(self._topic, qos=0)
+        client.subscribe(self._topic, qos=1)
         log.info("MQTT connected (rc=%s), subscribed to %s", reason_code, self._topic)
         self.connected.emit()
 

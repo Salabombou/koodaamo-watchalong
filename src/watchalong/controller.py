@@ -1,11 +1,4 @@
-"""Application controller: wires the torrent, room, and player subsystems and
-exposes a small API to QML.
-
-The host is authoritative. It seeds the file, broadcasts a state heartbeat, and
-applies play/pause/seek. Clients add the shared magnet, stream it locally, and
-follow the host's state (subject to the room's ``allow_pause`` / ``allow_seek``
-options).
-"""
+"""Coordinates players and host-authoritative watchalong rooms."""
 
 from __future__ import annotations
 
@@ -14,7 +7,7 @@ import os
 import time
 from typing import Optional
 
-from PySide6.QtCore import Property, QObject, QTimer, Signal, Slot
+from PySide6.QtCore import Property, QObject, QTimer, Qt, Signal, Slot
 
 from . import config
 from .players.base import Player
@@ -23,14 +16,17 @@ from .players.mpv_external import MpvExternalPlayer
 from .players.vlc_external import VlcExternalPlayer
 from .room import protocol
 from .room.channel import RoomChannel
+from .room.clock import ClockSync
+from .room.participants import ParticipantsModel
 from .room.protocol import RoomOptions, RoomState
+from .room.roster import Roster
 from .settings import SettingsController
 from .torrent.engine import TorrentEngine, TorrentProgress
 from .torrent.stream_server import StreamServer
 
 log = logging.getLogger(__name__)
 
-_DRIFT_THRESHOLD = 2.0  # seconds of allowed desync before a corrective seek
+_DRIFT_THRESHOLD = 0.4
 
 
 def _format_rate(bytes_per_s: float) -> str:
@@ -47,6 +43,7 @@ class AppController(QObject):
     # High-frequency playback updates; kept separate from ``changed`` so the
     # whole QML binding graph is not re-evaluated several times per second.
     positionChanged = Signal()
+    countdownChanged = Signal()
     errorOccurred = Signal(str)
     # Emitted when a user tries to host a room that already has a host.
     roomExists = Signal(str)
@@ -69,6 +66,23 @@ class AppController(QObject):
         self._is_host = False
         self._connected = False
         self._status = "Not connected"
+        self._instance = os.urandom(8).hex()
+        self._roster = Roster()
+        self._participants = ParticipantsModel(self)
+        self._clock = ClockSync()
+        self._self_ready = False
+        self._member_sequence = 0
+        self._loaded_last = False
+        self._deadline = 0.0
+        self._applied_revision = -1
+        self._host_seen = time.monotonic()
+        self._host_lost = False
+        self._pings: dict[float, float] = {}
+        self._ticks = 0
+        self._transfer_target = ""
+        self._expected_transfer: dict = {}
+        self._version_warned = False
+        self._claim_until = 0.0
 
         # players
         self._builtin = QtMediaPlayer()
@@ -95,6 +109,18 @@ class AppController(QObject):
         self._heartbeat = QTimer(self)
         self._heartbeat.setInterval(1000)
         self._heartbeat.timeout.connect(self._send_heartbeat)
+
+        self._start_timer = QTimer(self)
+        self._start_timer.setSingleShot(True)
+        self._start_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._start_timer.timeout.connect(self._finish_countdown)
+        self._countdown_timer = QTimer(self)
+        self._countdown_timer.setInterval(20)
+        self._countdown_timer.timeout.connect(self.countdownChanged)
+        self._transfer_timer = QTimer(self)
+        self._transfer_timer.setSingleShot(True)
+        self._transfer_timer.setInterval(5000)
+        self._transfer_timer.timeout.connect(self._on_transfer_timeout)
 
         # Duplicate-room probe: before claiming host we listen briefly for an
         # existing host on the same room topic.
@@ -134,6 +160,51 @@ class AppController(QObject):
     def username(self) -> str:
         return (self._settings.values["username"] or "Guest") if self._settings is not None else "Guest"
 
+    @Property(QObject, constant=True)
+    def participants(self) -> ParticipantsModel:
+        return self._participants
+
+    @Property(bool, notify=changed)
+    def selfReady(self) -> bool:
+        return self._self_ready
+
+    @Property(bool, notify=changed)
+    def selfIgnored(self) -> bool:
+        member = self._roster.members.get(self._self_id)
+        return member.ignored if member is not None else False
+
+    @Property(bool, notify=changed)
+    def canReady(self) -> bool:
+        return self._connected and not self.selfIgnored and not self._host_lost and self._self_loaded()
+
+    @Property(str, notify=changed)
+    def roomCode(self) -> str:
+        return self._pending_room_code
+
+    @Property(str, notify=changed)
+    def phase(self) -> str:
+        return self._state.phase
+
+    @Property(bool, notify=changed)
+    def transferring(self) -> bool:
+        return bool(self._transfer_target)
+
+    @Property(int, notify=changed)
+    def readyCount(self) -> int:
+        return sum(member.ready for member in self._roster.members.values() if not member.ignored and member.participating)
+
+    @Property(int, notify=changed)
+    def requiredCount(self) -> int:
+        return sum(not member.ignored and member.participating for member in self._roster.members.values())
+
+    @Property(float, notify=countdownChanged)
+    def countdownRemaining(self) -> float:
+        return max(0.0, self._deadline - time.monotonic()) if self._deadline else 0.0
+
+    @Property(bool, notify=changed)
+    def syncLoading(self) -> bool:
+        return self.hasMedia and not self._is_host and not self._clock.valid and bool(self._state.host_id)
+
     @Property(str, notify=changed)
     def mediaName(self) -> str:
         return self._state.media_name
@@ -164,7 +235,7 @@ class AppController(QObject):
 
     @Property(bool, notify=changed)
     def allowPause(self) -> bool:
-        return self._state.options.allow_pause
+        return True
 
     @Property(bool, notify=changed)
     def allowSeek(self) -> bool:
@@ -234,6 +305,15 @@ class AppController(QObject):
         self._pending_room_code = room_code
         self._pending_password = password
         self._state = RoomState(options=RoomOptions())
+        self._roster = Roster()
+        self._clock = ClockSync()
+        self._self_ready = False
+        self._loaded_last = False
+        self._applied_revision = -1
+        self._host_lost = False
+        self._version_warned = False
+        self._member_sequence = 0
+        self._update_participants()
         self._set_status("Checking room…" if as_host else "Connecting…")
 
         self._channel = RoomChannel(room_code, password, self)
@@ -266,9 +346,16 @@ class AppController(QObject):
             self.errorOccurred.emit(f"Failed to share file: {exc}")
             return
         self._state.media_magnet = magnet
+        self._state.media_id = os.urandom(8).hex()
         self._state.media_name = os.path.basename(path)
         self._state.playing = False
+        self._state.phase = "paused"
         self._state.position = 0.0
+        self._state.start_at = 0.0
+        self._state.revision += 1
+        self._cancel_countdown()
+        self._self_ready = False
+        self._roster.reset_media()
         self._media_token += 1
         self._set_status(f"Sharing: {self._state.media_name}")
         self._load_current_player()
@@ -300,41 +387,93 @@ class AppController(QObject):
 
     @Slot()
     def playPressed(self) -> None:
-        if not self._can_control_pause():
-            return
-        self._apply_playing(True, local_origin=True)
+        self._set_self_ready(True)
 
     @Slot()
     def pausePressed(self) -> None:
-        if not self._can_control_pause():
-            return
-        self._apply_playing(False, local_origin=True)
+        self._set_self_ready(False)
+
+    @Slot()
+    def toggleReady(self) -> None:
+        self._set_self_ready(not self._self_ready)
 
     @Slot(float)
     def seekTo(self, seconds: float) -> None:
-        if not self._can_control_seek():
+        if not self._can_control_seek() or not protocol.number(seconds, 604_800):
             return
-        self._apply_seek(float(seconds), local_origin=True)
+        duration = self._current_duration()
+        target = min(seconds, duration) if duration > 0 else seconds
+        if self._is_host:
+            self._pause_authoritative(target)
+            self._evaluate_readiness()
+        else:
+            self._member_sequence += 1
+            self._publish(protocol.SEEK, position=target, seq=self._member_sequence)
 
     @Slot(bool, bool)
     def setOptions(self, allow_pause: bool, allow_seek: bool) -> None:
         if not self._is_host:
             return
-        self._state.options = RoomOptions(allow_pause=allow_pause, allow_seek=allow_seek)
-        if self._channel is not None:
-            self._channel.publish(
-                protocol.make(protocol.OPTIONS, self._self_id, options=self._state.options.to_dict())
-            )
+        self._state.options = RoomOptions(allow_seek=allow_seek)
+        self._state.revision += 1
+        self._broadcast_state()
+        self._notify()
+
+    @Slot(str, bool)
+    def setIgnored(self, peer_id: str, ignored: bool) -> None:
+        member = self._roster.members.get(peer_id)
+        if not self._is_host or member is None or peer_id == self._self_id:
+            return
+        member.ignored = ignored
+        member.ready = False
+        self._update_participants()
+        self._evaluate_readiness()
+        self._broadcast_state()
+
+    @Slot(str)
+    def kick(self, peer_id: str) -> None:
+        if not self._is_host or peer_id == self._self_id or peer_id not in self._roster.members:
+            return
+        self._roster.bans.add(peer_id)
+        del self._roster.members[peer_id]
+        self._publish(protocol.KICK, target=peer_id)
+        self._update_participants()
+        self._evaluate_readiness()
+        self._broadcast_state()
+
+    @Slot(str)
+    def transferHost(self, peer_id: str) -> None:
+        member = self._roster.members.get(peer_id)
+        if not self._is_host or self._transfer_target or member is None or not member.loaded or member.ignored or peer_id == self._self_id:
+            return
+        self._pause_authoritative()
+        self._transfer_target = peer_id
+        snapshot = self._state.to_dict()
+        snapshot["members"] = self._roster.records(self._self_id)
+        snapshot["bans"] = sorted(self._roster.bans)
+        self._expected_transfer = {"target": peer_id, "snapshot": snapshot}
+        self._publish(protocol.HOST_TRANSFER, target=peer_id, snapshot=snapshot)
+        self._transfer_timer.start()
         self._notify()
 
     @Slot()
     def leave(self) -> None:
         if self._channel is not None:
+            self._publish(protocol.ROOM_CLOSED if self._is_host else protocol.LEAVE)
             self._channel.stop()
             self._channel = None
         self._heartbeat.stop()
         self._ui_timer.stop()
         self._probe_timer.stop()
+        self._transfer_timer.stop()
+        self._cancel_countdown()
+        if self._player is not None:
+            self._player.pause()
+        self._self_ready = False
+        self._transfer_target = ""
+        self._expected_transfer = {}
+        self._roster = Roster()
+        self._update_participants()
         self._probing = False
         self._wants_host = False
         self._connected = False
@@ -430,6 +569,8 @@ class AppController(QObject):
         self._player.set_position_callback(self._on_local_position)
         self._player.set_volume(self._volume)
         if self._state.media_magnet and self._stream.url:
+            if self._connected:
+                self._set_self_ready(False)
             self._load_current_player(handoff_position)
 
     def _load_current_player(self, position: float | None = None) -> None:
@@ -437,6 +578,7 @@ class AppController(QObject):
             return
         self._player_error = ""
         self._player_loading = True
+        self._loaded_last = False
         self._notify()
         # Cache-busting token forces a genuine reload when the media changes.
         try:
@@ -481,6 +623,7 @@ class AppController(QObject):
                 self._player_error = error
                 self._player_loading = False
                 self.errorOccurred.emit(f"{self._player.label}: {error}")
+                self._set_self_ready(False)
                 self._notify()
             elif self._player_loading and self._player.is_loaded():
                 self._player_loading = False
@@ -493,70 +636,227 @@ class AppController(QObject):
             self._duration = duration
             self.positionChanged.emit()
 
+        loaded = self._self_loaded()
+        if loaded != self._loaded_last:
+            self._loaded_last = loaded
+            if loaded and not self._is_host and self._state.phase == "playing":
+                self._apply_timeline(force=True)
+            self._send_member()
+            self._notify()
+
     # --- playback commands ---------------------------------------------------
 
-    def _apply_playing(self, playing: bool, local_origin: bool) -> None:
-        self._state.playing = playing
-        if self._player is not None:
-            self._player.set_paused(not playing)
-        if local_origin and self._channel is not None:
-            msg_type = protocol.PLAY if playing else protocol.PAUSE
-            self._channel.publish(protocol.make(msg_type, self._self_id, position=self._current_position()))
+    def _self_loaded(self) -> bool:
+        return bool(self.hasMedia and self._player is not None and self._player.is_loaded()
+                    and not self._player_error and (self._is_host or self._clock.valid))
+
+    def _publish(self, kind: str, **fields) -> None:
+        if self._channel is not None:
+            payload = {"session": self._state.session, "term": self._state.term}
+            payload.update(fields)
+            self._channel.publish(protocol.make(kind, self._self_id, **payload))
+
+    def _set_self_ready(self, ready: bool) -> None:
+        if ready and not self.canReady:
+            return
+        if self.selfIgnored:
+            return
+        self._self_ready = ready
+        self._send_member()
+        self._notify()
+
+    def _send_member(self) -> None:
+        if not self._connected:
+            return
+        self._member_sequence += 1
+        loaded = self._self_loaded()
         if self._is_host:
+            self._roster.announce(self._self_id, self.username, time.monotonic(), self._instance)
+            self._roster.update(self._self_id, self._self_ready, loaded,
+                                self._member_sequence, time.monotonic(), self.username)
+            self._update_participants()
+            self._evaluate_readiness()
+        else:
+            member = self._roster.members.get(self._self_id)
+            if member is not None and not member.participating and loaded and not member.ignored:
+                self._self_ready = True
+            self._publish(protocol.MEMBER, username=self.username, instance=self._instance,
+                          ready=self._self_ready, loaded=loaded, seq=self._member_sequence,
+                          media_id=self._state.media_id)
+
+    def _update_participants(self) -> None:
+        self._participants.update(self._roster.records(self._state.host_id, self._self_id))
+        self._notify()
+
+    def _host_time(self) -> float:
+        return time.time() if self._is_host else self._clock.to_host(time.time())
+
+    def _target_position(self) -> float:
+        elapsed = max(0.0, self._host_time() - self._state.anchor_ts) if self._state.phase == "playing" else 0.0
+        return self._state.position + elapsed
+
+    def _evaluate_readiness(self) -> None:
+        if not self._is_host or not self.hasMedia or self._transfer_target:
+            return
+        if not self._roster.all_ready:
+            if self._state.phase in ("playing", "countdown"):
+                self._pause_authoritative()
+            return
+        if self._state.phase == "paused":
+            self._state.phase = "countdown"
+            self._state.playing = False
+            self._state.start_at = time.time() + 3.0
+            self._state.anchor_ts = self._state.start_at
+            self._state.revision += 1
+            self._apply_timeline(force=True)
+            self._publish(protocol.PLAY_AT, **self._state.to_dict(), members=self._roster.records(self._self_id))
+            self._broadcast_state()
+            self._notify()
+
+    def _pause_authoritative(self, position: float | None = None) -> None:
+        if not self._is_host:
+            return
+        target = self._current_position() if position is None else position
+        self._state.phase = "paused"
+        self._state.playing = False
+        self._state.position = max(0.0, target)
+        self._state.start_at = 0.0
+        self._state.anchor_ts = time.time()
+        self._state.revision += 1
+        self._apply_timeline(force=True)
+        self._publish(protocol.PAUSE, **self._state.to_dict(), members=self._roster.records(self._self_id))
+        self._broadcast_state()
+        self._notify()
+
+    def _cancel_countdown(self) -> None:
+        self._start_timer.stop()
+        self._countdown_timer.stop()
+        self._deadline = 0.0
+        self.countdownChanged.emit()
+
+    def _apply_timeline(self, force: bool = False) -> None:
+        if not self.hasMedia:
+            return
+        target = self._target_position()
+        self._local_position = target
+        if self._state.phase == "countdown":
+            if self._player is not None:
+                self._player.pause()
+                if force:
+                    self._player.seek(self._state.position)
+            if (self._is_host or self._clock.valid) and (force or not self._deadline):
+                remaining = max(0.0, self._state.start_at - self._host_time())
+                self._deadline = time.monotonic() + remaining
+                self._start_timer.start(max(1, int(remaining * 1000)))
+                self._countdown_timer.start()
+                self.countdownChanged.emit()
+            return
+        self._cancel_countdown()
+        if self._player is not None:
+            if self._state.phase == "paused":
+                self._player.pause()
+            if force or abs(self._current_position() - target) > (_DRIFT_THRESHOLD if self._state.playing else 0.05):
+                self._player.seek(target)
+            if self._state.playing and (self._is_host or self._clock.valid):
+                self._player.play()
+
+    def _finish_countdown(self) -> None:
+        if self._state.phase != "countdown" or self._host_lost:
+            self._cancel_countdown()
+            return
+        if self.countdownRemaining > 0.001:
+            self._start_timer.start(max(1, int(self.countdownRemaining * 1000)))
+            return
+        if self._is_host and not self._roster.all_ready:
+            self._pause_authoritative()
+            return
+        self._state.phase = "playing"
+        self._state.playing = True
+        self._state.anchor_ts = self._state.start_at
+        self._cancel_countdown()
+        self._apply_timeline()
+        if self._is_host:
+            self._state.revision += 1
             self._broadcast_state()
         self._notify()
 
-    def _apply_seek(self, seconds: float, local_origin: bool) -> None:
-        self._state.position = seconds
-        if self._player is not None:
-            self._player.seek(seconds)
-        if local_origin and self._channel is not None:
-            self._channel.publish(protocol.make(protocol.SEEK, self._self_id, position=seconds))
-        if self._is_host:
-            self._broadcast_state()
+    def _send_ping(self) -> None:
+        if self._is_host or not self._state.host_id:
+            return
+        now = time.time()
+        self._pings = {stamp: sent for stamp, sent in self._pings.items() if now - sent < 10}
+        self._pings[now] = now
+        self._publish(protocol.PING, target=self._state.host_id, t0=now)
+
+    def _on_transfer_timeout(self) -> None:
+        self._transfer_target = ""
+        self._expected_transfer = {}
+        self.errorOccurred.emit("Host transfer was not acknowledged; you are still hosting")
+        self._evaluate_readiness()
+        self._broadcast_state()
+        self._notify()
 
     # --- broadcasting (host) -------------------------------------------------
 
     def _broadcast_set_media(self) -> None:
-        if self._channel is None:
+        if self._channel is None or not self._state.media_magnet:
             return
-        self._channel.publish(
-            protocol.make(
-                protocol.SET_MEDIA,
-                self._self_id,
-                magnet=self._state.media_magnet,
-                name=self._state.media_name,
-                meta=self._engine.torrent_file_b64(),
-            )
-        )
+        self._publish(protocol.SET_MEDIA, **self._state.to_dict(), meta=self._engine.torrent_file_b64())
 
     def _broadcast_state(self) -> None:
         if self._channel is None or not self._is_host:
             return
-        self._channel.publish(
-            protocol.make(
-                protocol.STATE,
-                self._self_id,
-                magnet=self._state.media_magnet,
-                name=self._state.media_name,
-                playing=self._state.playing,
-                position=self._current_position(),
-                options=self._state.options.to_dict(),
-            )
-        )
+        self._publish(protocol.STATE, **self._state.to_dict(), members=self._roster.records(self._self_id))
 
     def _send_heartbeat(self) -> None:
-        if self._is_host and self._state.media_magnet:
-            self._state.position = self._current_position()
+        if not self._connected:
+            return
+        self._ticks += 1
+        self._send_member()
+        if self._is_host:
+            if self._transfer_target:
+                self._publish(protocol.HOST_TRANSFER, **self._expected_transfer)
+            if time.monotonic() < self._claim_until:
+                self._publish(protocol.HOST_CLAIM, host_id=self._self_id)
+            if self._roster.expire(time.monotonic(), self._self_id):
+                self._update_participants()
+                self._evaluate_readiness()
             self._broadcast_state()
+        else:
+            if not self._state.host_id:
+                self._publish(protocol.HELLO, username=self.username, instance=self._instance)
+            if not self._clock.valid or self._ticks % 15 == 0:
+                self._send_ping()
+            if self._state.host_id and time.monotonic() - self._host_seen > 12 and not self._host_lost:
+                self._host_lost = True
+                self._self_ready = False
+                self._cancel_countdown()
+                if self._player is not None:
+                    self._player.pause()
+                self._set_status("Host disconnected; playback paused")
+                self._notify()
 
     # --- incoming messages ---------------------------------------------------
 
     def _on_message(self, message: dict) -> None:
+        source = self.sender()
+        if source is not None and source is not self._channel:
+            return
+        if not isinstance(message, dict):
+            return
         sender = message.get("from")
         if sender == self._self_id:
             return
         msg_type = message.get("t")
+        if message.get("v") != protocol.VERSION:
+            if not self._version_warned and msg_type in (protocol.STATE, protocol.HOST_ACK):
+                self._version_warned = True
+                self._probe_timer.stop()
+                self._probing = False
+                self.errorOccurred.emit("Incompatible room version. All participants must update Watchalong.")
+            return
+        if not protocol.validate(message):
+            return
 
         if self._probing:
             # While probing we only care whether a host already owns the room.
@@ -565,14 +865,83 @@ class AppController(QObject):
             return
         if msg_type == protocol.PROBE:
             if self._is_host and self._channel is not None:
-                self._channel.publish(protocol.make(protocol.HOST_ACK, self._self_id))
+                self._publish(protocol.HOST_ACK, host_id=self._self_id)
             return
         if msg_type == protocol.HOST_ACK:
+            if not self._is_host and (not self._state.host_id or sender == self._state.host_id):
+                if not protocol.identifier(message.get("session")):
+                    return
+                self._state.host_id = sender
+                self._state.session = message["session"]
+                self._state.term = message.get("term", 1)
+                self._host_seen = time.monotonic()
+                self._send_ping()
+                self._publish(protocol.REQUEST_STATE)
             return
 
         if msg_type == protocol.HELLO:
-            if self._is_host and self._state.media_magnet:
+            if self._is_host:
+                self._publish(protocol.HOST_ACK, host_id=self._self_id)
+                member = self._roster.announce(sender, message.get("username", "Guest"), time.monotonic(),
+                    message.get("instance", ""), late=self._state.phase in ("playing", "countdown"))
+                if member is None:
+                    self._publish(protocol.KICK, target=sender)
+                    return
+                self._update_participants()
                 self._broadcast_set_media()
+                self._broadcast_state()
+            return
+        if not self._is_host and not self._state.host_id and msg_type == protocol.STATE:
+            try:
+                initial = RoomState.from_dict(message)
+            except (ValueError, KeyError, TypeError):
+                return
+            if initial.host_id != sender:
+                return
+            self._state.host_id = sender
+            self._state.session = initial.session
+            self._state.term = initial.term
+            self._send_ping()
+        if message.get("session") != self._state.session or message.get("term") != self._state.term:
+            if msg_type == protocol.HOST_CLAIM:
+                self._handle_host_claim(message)
+            return
+        if msg_type == protocol.PING:
+            if self._is_host and message.get("target") == self._self_id and protocol.number(message.get("t0")):
+                received = time.time()
+                self._publish(protocol.PONG, target=sender, t0=message["t0"], t1=received, t2=time.time())
+            return
+        if msg_type == protocol.PONG:
+            stamp = message.get("t0")
+            if sender == self._state.host_id and message.get("target") == self._self_id and stamp in self._pings:
+                self._pings.pop(stamp)
+                if protocol.number(message.get("t1")) and protocol.number(message.get("t2")):
+                    if self._clock.sample(stamp, message["t1"], message["t2"], time.time()):
+                        self._apply_timeline()
+                        self._send_member()
+                        self._notify()
+            return
+        if msg_type == protocol.MEMBER:
+            if self._is_host:
+                member = self._roster.members.get(sender)
+                if member is None or member.instance != message.get("instance", ""):
+                    return
+                if member.ignored:
+                    member.last_seen = time.monotonic()
+                    member.sequence = max(member.sequence, message.get("seq", -1))
+                    return
+                loaded = message.get("loaded") is True and message.get("media_id") == self._state.media_id
+                if self._roster.update(sender, message.get("ready") is True, loaded,
+                                       message.get("seq", -1), time.monotonic(), message.get("username", member.name)):
+                    self._update_participants()
+                    self._evaluate_readiness()
+                    self._broadcast_state()
+            return
+        if msg_type == protocol.LEAVE:
+            if self._is_host and sender in self._roster.members:
+                del self._roster.members[sender]
+                self._update_participants()
+                self._evaluate_readiness()
                 self._broadcast_state()
             return
         if msg_type == protocol.REQUEST_STATE:
@@ -580,21 +949,27 @@ class AppController(QObject):
                 self._broadcast_set_media()
                 self._broadcast_state()
             return
-        if msg_type == protocol.SET_MEDIA:
-            if not self._is_host:
-                self._handle_set_media(message)
-            return
-        if msg_type == protocol.OPTIONS:
-            self._state.options = RoomOptions.from_dict(message.get("options", {}))
-            self._notify()
-            return
-        if msg_type == protocol.STATE:
-            if not self._is_host:
-                self._handle_host_state(message)
-            return
-        if msg_type in (protocol.PLAY, protocol.PAUSE, protocol.SEEK):
+        if msg_type == protocol.SEEK:
             self._handle_control_request(message)
             return
+        if sender != self._state.host_id or self._is_host:
+            return
+        self._host_seen = time.monotonic()
+        self._host_lost = False
+        if msg_type == protocol.SET_MEDIA:
+            if message.get("revision", -1) >= self._applied_revision:
+                self._handle_set_media(message)
+        elif msg_type in (protocol.STATE, protocol.PLAY_AT, protocol.PAUSE):
+            self._handle_host_state(message)
+        elif msg_type == protocol.KICK and message.get("target") == self._self_id:
+            self.leave()
+            self._set_status("Removed by the host")
+            self.errorOccurred.emit("You were removed by the host")
+        elif msg_type == protocol.ROOM_CLOSED:
+            self.leave()
+            self._set_status("The host closed the room")
+        elif msg_type == protocol.HOST_TRANSFER:
+            self._handle_transfer_offer(message)
 
     def _handle_set_media(self, message: dict) -> None:
         magnet = message.get("magnet", "")
@@ -608,10 +983,14 @@ class AppController(QObject):
         if same and (not meta or self._engine.has_metadata()):
             return
         self._state.media_magnet = magnet
+        self._state.media_id = message.get("media_id", self._state.media_id)
         self._state.media_name = message.get("name", "")
         if not same:
             self._state.position = 0.0
             self._state.playing = False
+            self._state.phase = "paused"
+            self._self_ready = False
+            self._cancel_countdown()
             self._media_token += 1
         self._set_status(f"Loading: {self._state.media_name}")
         try:
@@ -624,38 +1003,98 @@ class AppController(QObject):
         self._notify()
 
     def _handle_host_state(self, message: dict) -> None:
-        magnet = message.get("magnet", "")
-        if magnet and magnet != self._state.media_magnet:
-            self._handle_set_media({"magnet": magnet, "name": message.get("name", "")})
-
-        self._state.options = RoomOptions.from_dict(message.get("options", {}))
-        host_playing = bool(message.get("playing", False))
-        host_position = float(message.get("position", 0.0))
-
-        if host_playing != self._state.playing:
-            self._apply_playing(host_playing, local_origin=False)
-
-        if abs(self._current_position() - host_position) > _DRIFT_THRESHOLD:
-            self._apply_seek(host_position, local_origin=False)
-
+        try:
+            incoming = RoomState.from_dict(message)
+            roster = Roster()
+            roster.replace(message.get("members", []))
+        except (ValueError, TypeError, KeyError):
+            return
+        if incoming.host_id != message.get("from") or incoming.revision < self._applied_revision:
+            return
+        changed = incoming.revision != self._applied_revision
+        old_phase = self._state.phase
+        if incoming.media_magnet and incoming.media_id != self._state.media_id:
+            self._handle_set_media(message)
+        self._state = incoming
+        self._applied_revision = incoming.revision
+        self._roster = roster
+        member = roster.members.get(self._self_id)
+        if member is not None and (member.ignored or member.sequence >= self._member_sequence):
+            self._self_ready = member.ready and not member.ignored
+        self._update_participants()
+        self._apply_timeline(force=changed and not (old_phase == "playing" and incoming.phase == "playing"))
+        self._set_status("Connected to host")
         self._notify()
 
     def _handle_control_request(self, message: dict) -> None:
-        # Only the host acts on control requests and re-broadcasts authoritative state.
         if not self._is_host:
             return
-        msg_type = message.get("t")
-        if msg_type == protocol.SEEK:
-            if self._state.options.allow_seek:
-                self._apply_seek(float(message.get("position", 0.0)), local_origin=False)
-                self._broadcast_state()
-        elif msg_type in (protocol.PLAY, protocol.PAUSE):
-            if self._state.options.allow_pause:
-                self._apply_playing(msg_type == protocol.PLAY, local_origin=False)
+        member = self._roster.members.get(message.get("from"))
+        if member is None or member.ignored or not self._state.options.allow_seek or self._transfer_target:
+            return
+        sequence = message.get("seq", -1)
+        if sequence <= member.sequence or not protocol.number(message.get("position"), 604_800):
+            return
+        member.sequence = sequence
+        self.seekTo(float(message["position"]))
+
+    def _handle_transfer_offer(self, message: dict) -> None:
+        target = message.get("target")
+        snapshot = message.get("snapshot")
+        try:
+            state = RoomState.from_dict(snapshot)
+            roster = Roster()
+            roster.replace(snapshot["members"])
+            bans = snapshot.get("bans", [])
+            if not isinstance(bans, list) or len(bans) > 256 or not all(protocol.identifier(peer) for peer in bans):
+                return
+            if target not in roster.members or state.host_id != self._state.host_id or state.session != self._state.session or state.term != self._state.term:
+                return
+        except (ValueError, TypeError, KeyError, AttributeError):
+            return
+        self._expected_transfer = {"target": target, "snapshot": snapshot}
+        if target == self._self_id:
+            self._state = state
+            self._state.host_id = self._self_id
+            self._state.term += 1
+            self._state.revision += 1
+            self._is_host = True
+            self._claim_until = time.monotonic() + 6
+            self._roster = roster
+            self._roster.bans = set(bans)
+            for member in roster.members.values():
+                member.last_seen = time.monotonic()
+            self._clock = ClockSync()
+            self._publish(protocol.HOST_CLAIM, host_id=self._self_id)
+            self._update_participants()
+            self._evaluate_readiness()
+            self._broadcast_state()
+            self._notify()
+
+    def _handle_host_claim(self, message: dict) -> None:
+        target = self._expected_transfer.get("target")
+        if not target or message.get("from") != target or message.get("session") != self._state.session or message.get("term") != self._state.term + 1:
+            return
+        self._transfer_timer.stop()
+        self._transfer_target = ""
+        self._expected_transfer = {}
+        self._is_host = False
+        self._state.host_id = target
+        self._state.term = message["term"]
+        self._state.phase = "paused"
+        self._state.playing = False
+        self._applied_revision = -1
+        self._clock = ClockSync()
+        self._cancel_countdown()
+        self._send_ping()
+        self._publish(protocol.REQUEST_STATE)
+        self._update_participants()
 
     # --- signal handlers -----------------------------------------------------
 
     def _on_channel_connected(self) -> None:
+        if self.sender() is not None and self.sender() is not self._channel:
+            return
         if self._wants_host and not self._is_host:
             # Probe for an existing host before claiming the room.
             self._probing = True
@@ -666,15 +1105,16 @@ class AppController(QObject):
             self._notify()
             return
         self._connected = True
+        self._heartbeat.start()
         self._set_status("Connected" if not self._is_host else "Hosting — share a file")
         if self._is_host:
             self._heartbeat.start()
             if self._channel is not None:
-                self._channel.publish(protocol.make(protocol.HOST_ACK, self._self_id))
+                self._publish(protocol.HOST_ACK, host_id=self._self_id)
         else:
             if self._channel is not None:
-                self._channel.publish(protocol.make(protocol.HELLO, self._self_id))
-                self._channel.publish(protocol.make(protocol.REQUEST_STATE, self._self_id))
+                self._publish(protocol.HELLO, username=self.username, instance=self._instance)
+                self._publish(protocol.REQUEST_STATE)
         self._notify()
 
     def _on_probe_timeout(self) -> None:
@@ -685,11 +1125,14 @@ class AppController(QObject):
         self._wants_host = False
         self._is_host = True
         self._state.host_id = self._self_id
+        self._state.session = os.urandom(16).hex()
         self._connected = True
         self._set_status("Hosting — share a file")
         self._heartbeat.start()
         if self._channel is not None:
-            self._channel.publish(protocol.make(protocol.HOST_ACK, self._self_id))
+            self._publish(protocol.HOST_ACK, host_id=self._self_id)
+        self._roster.announce(self._self_id, self.username, time.monotonic(), self._instance)
+        self._update_participants()
         self._notify()
 
     def _on_existing_room_detected(self) -> None:
@@ -707,7 +1150,18 @@ class AppController(QObject):
         self._notify()
 
     def _on_channel_disconnected(self) -> None:
+        if self.sender() is not None and self.sender() is not self._channel:
+            return
         self._connected = False
+        self._self_ready = False
+        self._cancel_countdown()
+        if self._player is not None:
+            self._player.pause()
+        if self._is_host:
+            self._state.phase = "paused"
+            self._state.playing = False
+            self._state.position = self._current_position()
+            self._state.revision += 1
         self._set_status("Disconnected — reconnecting…")
         self._notify()
 
@@ -729,10 +1183,10 @@ class AppController(QObject):
     # --- helpers -------------------------------------------------------------
 
     def _can_control_pause(self) -> bool:
-        return self._is_host or self._state.options.allow_pause
+        return self.canReady
 
     def _can_control_seek(self) -> bool:
-        return self._is_host or self._state.options.allow_seek
+        return self.hasMedia and not self.selfIgnored and not self._transfer_target and (self._is_host or self._state.options.allow_seek)
 
     @staticmethod
     def _normalize_path(path: str) -> str:
@@ -754,6 +1208,8 @@ class AppController(QObject):
 
     def shutdown(self) -> None:
         self.leave()
+        if self._player is not None:
+            self._player.shutdown()
         for player in self._external.values():
             player.shutdown()
         self._builtin.shutdown()

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import time
+import tempfile
+import threading
+from pathlib import Path
 import unittest
 from collections import deque
 from copy import deepcopy
@@ -146,6 +149,86 @@ class RoomFlowTests(unittest.TestCase):
         self.host.toggleReady()
         self.guest.toggleReady()
         self.bus.flush()
+
+    def test_preparation_is_nonblocking_and_applies_on_gui_thread(self) -> None:
+        from PySide6.QtCore import QEventLoop, QTimer
+        started = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+        main_thread = threading.get_ident()
+        worker_threads = []
+        loop = QEventLoop()
+        timeout = QTimer()
+        timeout.setSingleShot(True)
+        timeout.timeout.connect(loop.quit)
+        self.host._seed_finished.connect(loop.quit)
+
+        def prepare(path, stopped):
+            worker_threads.append(threading.get_ident())
+            started.set()
+            release.wait(2)
+            finished.set()
+            return b"prepared metadata"
+
+        self.host._engine.seed_prepared.return_value = "magnet:prepared"
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "watchalong.controller.prepare_file_isolated", side_effect=prepare
+        ):
+            path = Path(directory) / "video.mp4"
+            path.touch()
+            before = time.monotonic()
+            self.host.shareFile(str(path))
+            self.assertLess(time.monotonic() - before, 0.2)
+            self.assertTrue(started.wait(1))
+            self.assertTrue(self.host.mediaPreparing)
+            self.assertTrue(self.host.playerLoading)
+            self.assertFalse(self.host.canReady)
+            self.host._engine.seed_prepared.assert_not_called()
+            release.set()
+            self.assertTrue(finished.wait(1))
+            timeout.start(1000)
+            loop.exec()
+            timeout.stop()
+            self.host._engine.seed_prepared.assert_called_once_with(str(path), b"prepared metadata")
+            self.assertFalse(self.host.mediaPreparing)
+            self.assertNotEqual(worker_threads, [main_thread])
+
+    def test_preparation_finished_after_leave_is_discarded(self) -> None:
+        token = self.host._preparation
+        self.host._media_preparing = True
+        self.host.leave()
+        self.host._on_seed_finished(token, "old.mp4", b"old metadata", "")
+        self.host._engine.seed_prepared.assert_not_called()
+        self.assertFalse(self.host.mediaPreparing)
+
+    def test_host_transfer_waits_for_video_preparation(self) -> None:
+        self.host._media_preparing = True
+        self.host.transferHost("guest")
+        self.assertFalse(self.host.transferring)
+        self.assertTrue(self.host.isHost)
+
+    def test_real_torrent_metadata_can_be_prepared_without_a_session(self) -> None:
+        import libtorrent as lt
+        from watchalong.torrent.engine import TorrentEngine
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "video.mp4"
+            path.write_bytes(b"video data" * 20000)
+            metadata = TorrentEngine.prepare_file(str(path))
+            info = lt.torrent_info(lt.bdecode(metadata))
+            self.assertEqual(info.name(), path.name)
+            self.assertEqual(info.total_size(), path.stat().st_size)
+
+    def test_isolated_preparation_returns_real_metadata_and_respects_cancellation(self) -> None:
+        import libtorrent as lt
+        from watchalong.torrent.engine import prepare_file_isolated
+        stopped = threading.Event()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "video.mp4"
+            path.write_bytes(b"video data" * 20000)
+            metadata = prepare_file_isolated(str(path), stopped)
+            self.assertEqual(lt.torrent_info(lt.bdecode(metadata)).total_size(), path.stat().st_size)
+            stopped.set()
+            self.assertEqual(prepare_file_isolated(str(path), stopped), b"")
 
     def begin_playback(self) -> None:
         self.ready_everyone()

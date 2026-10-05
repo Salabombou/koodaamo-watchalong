@@ -71,6 +71,9 @@ class _VlcWorker:
 
     def _status(self, params: Optional[dict] = None) -> Optional[dict]:
         try:
+            if params is not None and params.get("command") == "seek" and self.snapshot[1] > 0:
+                percent = max(0.0, min(100.0, float(params["val"]) / self.snapshot[1] * 100.0))
+                params = {**params, "val": f"{percent:.8f}%"}
             response = self._session.get(
                 f"{self._base}/status.json",
                 params=params,

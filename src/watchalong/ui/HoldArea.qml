@@ -41,6 +41,9 @@ Item {
     onEnabledChanged: if (!enabled) cancel()
     onVisibleChanged: if (!visible) cancel()
     onActiveFocusChanged: if (!activeFocus) cancel()
+    Keys.onShortcutOverride: (event) => {
+        if (event.key === Qt.Key_Space || event.key === Qt.Key_Return) event.accepted = true;
+    }
     Keys.onPressed: (event) => {
         if ((event.key === Qt.Key_Space || event.key === Qt.Key_Return) && !event.isAutoRepeat) {
             begin(Qt.LeftButton);

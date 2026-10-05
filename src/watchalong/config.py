@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 
 APP_ID = "koodaamo-watchalong"
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.3.0"
 
 # Build variant: "portable" (default) or "installer" (auto-updating). Installer
 # builds bundle a generated ``_build_variant`` module that overrides this.

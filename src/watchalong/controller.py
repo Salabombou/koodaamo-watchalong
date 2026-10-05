@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from typing import Optional
 
@@ -21,7 +22,7 @@ from .room.participants import ParticipantsModel
 from .room.protocol import RoomOptions, RoomState
 from .room.roster import Roster
 from .settings import SettingsController
-from .torrent.engine import TorrentEngine, TorrentProgress
+from .torrent.engine import TorrentEngine, TorrentProgress, prepare_file_isolated
 from .torrent.stream_server import StreamServer
 
 log = logging.getLogger(__name__)
@@ -47,6 +48,7 @@ class AppController(QObject):
     errorOccurred = Signal(str)
     # Emitted when a user tries to host a room that already has a host.
     roomExists = Signal(str)
+    _seed_finished = Signal(int, str, bytes, str)
 
     def __init__(self, parent: QObject | None = None, settings: SettingsController | None = None) -> None:
         super().__init__(parent)
@@ -83,6 +85,10 @@ class AppController(QObject):
         self._expected_transfer: dict = {}
         self._version_warned = False
         self._claim_until = 0.0
+        self._preparation = 0
+        self._preparation_stop: threading.Event | None = None
+        self._media_preparing = False
+        self._seed_finished.connect(self._on_seed_finished)
 
         # players
         self._builtin = QtMediaPlayer()
@@ -175,7 +181,7 @@ class AppController(QObject):
 
     @Property(bool, notify=changed)
     def canReady(self) -> bool:
-        return self._connected and not self.selfIgnored and not self._host_lost and self._self_loaded()
+        return self._connected and not self._media_preparing and not self._transfer_target and not self.selfIgnored and not self._host_lost and self._self_loaded()
 
     @Property(str, notify=changed)
     def roomCode(self) -> str:
@@ -247,7 +253,11 @@ class AppController(QObject):
 
     @Property(bool, notify=changed)
     def playerLoading(self) -> bool:
-        return self._player_loading
+        return self._player_loading or self._media_preparing
+
+    @Property(bool, notify=changed)
+    def mediaPreparing(self) -> bool:
+        return self._media_preparing
 
     @Property(str, notify=changed)
     def playerError(self) -> str:
@@ -340,10 +350,45 @@ class AppController(QObject):
         if not path or not os.path.isfile(path):
             self.errorOccurred.emit(f"File not found: {path}")
             return
+        if self._preparation_stop is not None:
+            self._preparation_stop.set()
+        self._preparation += 1
+        token = self._preparation
+        stopped = threading.Event()
+        self._preparation_stop = stopped
+        self._media_preparing = True
+        self._set_self_ready(False)
+        self._set_status("Preparing video...")
+        self._notify()
+
+        def prepare() -> None:
+            try:
+                metadata = prepare_file_isolated(path, stopped)
+                error = ""
+            except Exception as exc:
+                metadata = b""
+                error = str(exc)
+            if not stopped.is_set():
+                self._seed_finished.emit(token, path, metadata, error)
+
+        threading.Thread(target=prepare, name="watchalong-file-preparation", daemon=True).start()
+
+    @Slot(int, str, bytes, str)
+    def _on_seed_finished(self, token: int, path: str, metadata: bytes, error: str) -> None:
+        if token != self._preparation or not self._connected or not self._is_host:
+            return
+        self._preparation_stop = None
+        self._media_preparing = False
+        if error:
+            self._set_status("Could not prepare video")
+            self.errorOccurred.emit(f"Failed to share file: {error}")
+            self._notify()
+            return
         try:
-            magnet = self._engine.seed_file(path)
+            magnet = self._engine.seed_prepared(path, metadata)
         except Exception as exc:  # pragma: no cover
             self.errorOccurred.emit(f"Failed to share file: {exc}")
+            self._notify()
             return
         self._state.media_magnet = magnet
         self._state.media_id = os.urandom(8).hex()
@@ -444,7 +489,7 @@ class AppController(QObject):
     @Slot(str)
     def transferHost(self, peer_id: str) -> None:
         member = self._roster.members.get(peer_id)
-        if not self._is_host or self._transfer_target or member is None or not member.loaded or member.ignored or peer_id == self._self_id:
+        if not self._is_host or self._media_preparing or self._transfer_target or member is None or not member.loaded or member.ignored or peer_id == self._self_id:
             return
         self._pause_authoritative()
         self._transfer_target = peer_id
@@ -458,6 +503,11 @@ class AppController(QObject):
 
     @Slot()
     def leave(self) -> None:
+        self._preparation += 1
+        if self._preparation_stop is not None:
+            self._preparation_stop.set()
+            self._preparation_stop = None
+        self._media_preparing = False
         if self._channel is not None:
             self._publish(protocol.ROOM_CLOSED if self._is_host else protocol.LEAVE)
             self._channel.stop()

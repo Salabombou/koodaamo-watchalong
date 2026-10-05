@@ -126,6 +126,15 @@ def run() -> None:
         QTest.mouseClick(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, position)
         assert not guest.ignored
 
+        row.forceActiveFocus()
+        ready_before = controller.selfReady
+        QTest.keyPress(window, Qt.Key.Key_Space)
+        settle(400)
+        assert 0 < row.property("progress") < 1
+        QTest.keyRelease(window, Qt.Key.Key_Space)
+        assert "guest" in controller._roster.members and not guest.ignored
+        assert controller.selfReady == ready_before, "Hold key also triggered room readiness"
+
         QTest.mousePress(window, Qt.MouseButton.RightButton, Qt.KeyboardModifier.NoModifier, position)
         settle(1300)
         QTest.mouseRelease(window, Qt.MouseButton.RightButton, Qt.KeyboardModifier.NoModifier, position)

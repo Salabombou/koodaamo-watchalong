@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import base64
 import logging
+import multiprocessing
 import os
+import threading
+from multiprocessing.connection import Connection
 from dataclasses import dataclass
 from typing import Optional
 
@@ -35,6 +38,45 @@ class TorrentProgress:
     total_wanted: int = 0
     total_done: int = 0
     is_seeding: bool = False
+
+
+def _prepare_file_process(path: str, output: Connection) -> None:
+    try:
+        output.send((True, TorrentEngine.prepare_file(path)))
+    except Exception as exc:
+        output.send((False, str(exc)))
+    finally:
+        output.close()
+
+
+def prepare_file_isolated(path: str, stopped: threading.Event) -> bytes:
+    if stopped.is_set():
+        return b""
+    context = multiprocessing.get_context("spawn")
+    receiver, sender = context.Pipe(duplex=False)
+    process = context.Process(target=_prepare_file_process, args=(path, sender), daemon=True)
+    try:
+        process.start()
+        sender.close()
+        while not stopped.is_set():
+            if receiver.poll(0.1):
+                success, result = receiver.recv()
+                if not success:
+                    raise RuntimeError(result)
+                return result
+            if not process.is_alive():
+                raise RuntimeError("Video preparation process exited without metadata")
+        return b""
+    finally:
+        if process.pid is not None:
+            if process.is_alive():
+                process.terminate()
+            process.join(2)
+            if process.is_alive():
+                process.kill()
+                process.join()
+        receiver.close()
+        sender.close()
 
 
 def _alert_mask() -> int:
@@ -101,8 +143,8 @@ class TorrentEngine(QObject):
 
     # --- host: seed a file ---------------------------------------------------
 
-    def seed_file(self, path: str) -> str:
-        """Create a torrent from ``path``, start seeding, and return the magnet."""
+    @staticmethod
+    def prepare_file(path: str) -> bytes:
         path = os.path.abspath(path)
         if not os.path.isfile(path):
             raise FileNotFoundError(path)
@@ -117,7 +159,14 @@ class TorrentEngine(QObject):
         lt.set_piece_hashes(creator, parent)
 
         entry = creator.generate()
-        torrent_bytes = lt.bencode(entry)
+        return bytes(lt.bencode(entry))
+
+    def seed_file(self, path: str) -> str:
+        """Create a torrent from ``path``, start seeding, and return the magnet."""
+        return self.seed_prepared(path, self.prepare_file(path))
+
+    def seed_prepared(self, path: str, torrent_bytes: bytes) -> str:
+        parent = os.path.dirname(os.path.abspath(path))
         info = lt.torrent_info(lt.bdecode(torrent_bytes))
         self._torrent_file = bytes(torrent_bytes)
 

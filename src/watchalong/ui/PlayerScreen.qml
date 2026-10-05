@@ -147,7 +147,7 @@ Rectangle {
             Layout.alignment: Qt.AlignHCenter
         }
         Label {
-            text: playerScreen.isBuiltin ? "Loading media..."
+            text: app.mediaPreparing ? "Preparing video..." : playerScreen.isBuiltin ? "Loading media..."
                   : "Opening " + (app.playerKey === "vlc" ? "VLC" : "mpv") + "..."
             textFormat: Text.PlainText
             color: Theme.subtext

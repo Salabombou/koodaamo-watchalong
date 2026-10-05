@@ -126,6 +126,7 @@ Item {
             IconButton {
                 name: "share"
                 visible: app.isHost
+                enabled: !app.mediaPreparing && !app.transferring
                 text: "Share a file"
                 onClicked: ApplicationWindow.window.openShareDialog()
             }

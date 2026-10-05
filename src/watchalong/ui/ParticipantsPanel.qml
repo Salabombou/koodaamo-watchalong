@@ -73,7 +73,7 @@ Rectangle {
                         acceptedButtons: Qt.LeftButton
                         progressColor: Theme.text
                         accessibleText: panel.kickConfirmation ? "Hold to remove participant" : "Hold to transfer hosting"
-                        enabled: app.isHost && !app.transferring
+                        enabled: app.isHost && !app.transferring && !app.mediaPreparing
                         onHeld: {
                             Sounds.ready();
                             if (panel.kickConfirmation) app.kick(panel.targetId);
@@ -89,7 +89,7 @@ Rectangle {
         id: actions
         MenuItem { text: panel.targetIgnored ? "Stop ignoring" : "Ignore"; onTriggered: app.setIgnored(panel.targetId, !panel.targetIgnored) }
         MenuItem { text: "Remove participant..."; onTriggered: panel.confirm(panel.targetId, panel.targetName, true) }
-        MenuItem { text: "Transfer hosting..."; enabled: panel.targetLoaded && !panel.targetIgnored; onTriggered: panel.confirm(panel.targetId, panel.targetName, false) }
+        MenuItem { text: "Transfer hosting..."; enabled: panel.targetLoaded && !panel.targetIgnored && !app.mediaPreparing; onTriggered: panel.confirm(panel.targetId, panel.targetName, false) }
     }
     ColumnLayout {
         anchors.fill: parent
@@ -145,6 +145,7 @@ Rectangle {
                     }
                     ColumnLayout {
                         Layout.fillWidth: true
+                        Layout.minimumWidth: 0
                         spacing: 3
                         Label {
                             text: member.displayName + (member.isSelf ? " (you)" : "")
@@ -152,6 +153,7 @@ Rectangle {
                             color: Theme.text
                             elide: Text.ElideRight
                             Layout.fillWidth: true
+                            Layout.minimumWidth: 0
                             font.weight: member.isHost ? Font.DemiBold : Font.Normal
                         }
                         RowLayout {
@@ -176,7 +178,7 @@ Rectangle {
                     onHeld: (button) => {
                         Sounds.ready();
                         if (button === Qt.LeftButton) app.kick(member.peerId);
-                        else if (member.loaded && !member.ignored) panel.confirm(member.peerId, member.displayName, false);
+                        else if (member.loaded && !member.ignored && !app.mediaPreparing) panel.confirm(member.peerId, member.displayName, false);
                     }
                     ToolTip.visible: hovered && visible && enabled && panel.visible
                     ToolTip.text: "Click: ignore. Hold left: remove. Hold right: transfer."

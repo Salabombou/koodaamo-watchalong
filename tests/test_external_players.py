@@ -311,7 +311,7 @@ class ExternalPlayerTests(unittest.TestCase):
                 http_ready.set()
                 self.assertTrue(controls_sent.wait(1))
                 self.assertEqual(commands, [
-                    {"command": "seek", "val": "12.5"},
+                    {"command": "seek", "val": "12.50000000%"},
                     {"command": "volume", "val": "128"},
                     {"command": "pl_forceresume"},
                 ])
@@ -557,6 +557,10 @@ class NativePlayerTests(unittest.TestCase):
                         self.assertTrue(player.is_loaded())
                         started = time.monotonic()
                         player.seek(2.25)
+                        player.pause()
+                        self.assertLess(time.monotonic() - started, 0.2)
+                        self.assertTrue(self.wait_until(lambda: abs(player.get_position() - 2.25) < 0.08))
+                        started = time.monotonic()
                         player.play()
                         self.assertLess(time.monotonic() - started, 0.2)
                         self.assertTrue(self.wait_until(lambda: player.get_position() >= 2.0))

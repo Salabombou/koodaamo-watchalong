@@ -11,7 +11,7 @@ ApplicationWindow {
     title: "Updating Koodaamo Watchalong"
     color: Theme.background
 
-    Material.theme: Material.Dark
+    Material.theme: Theme.isDark ? Material.Dark : Material.Light
     Material.accent: Theme.accent
     Material.primary: Theme.accent
     Material.background: Theme.surface

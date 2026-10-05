@@ -24,6 +24,7 @@ from .players.vlc_external import VlcExternalPlayer
 from .room import protocol
 from .room.channel import RoomChannel
 from .room.protocol import RoomOptions, RoomState
+from .settings import SettingsController
 from .torrent.engine import TorrentEngine, TorrentProgress
 from .torrent.stream_server import StreamServer
 
@@ -50,9 +51,10 @@ class AppController(QObject):
     # Emitted when a user tries to host a room that already has a host.
     roomExists = Signal(str)
 
-    def __init__(self, parent: QObject | None = None) -> None:
+    def __init__(self, parent: QObject | None = None, settings: SettingsController | None = None) -> None:
         super().__init__(parent)
-        self._self_id = os.urandom(6).hex()
+        self._settings = settings
+        self._self_id = settings.identity if settings is not None else os.urandom(16).hex()
 
         self._engine = TorrentEngine()
         self._engine.progress_updated.connect(self._on_progress)
@@ -72,7 +74,7 @@ class AppController(QObject):
         self._builtin = QtMediaPlayer()
         self._external: dict[str, Player] = {}
         self._player: Optional[Player] = None
-        self._player_key = self._default_player_key()
+        self._player_key = settings.values["defaultPlayer"] if settings is not None else self._default_player_key()
         self._player_error = ""
         self._player_loading = False
         self._local_position = 0.0
@@ -109,6 +111,10 @@ class AppController(QObject):
         self._ui_timer = QTimer(self)
         self._ui_timer.setInterval(250)
         self._ui_timer.timeout.connect(self._refresh_playback)
+        self._preferences_signature = self._player_preferences()
+        if settings is not None:
+            settings.changed.connect(self._on_preferences_changed)
+            settings.errorOccurred.connect(self.errorOccurred)
 
     # --- QML properties ------------------------------------------------------
 
@@ -123,6 +129,10 @@ class AppController(QObject):
     @Property(str, notify=changed)
     def statusText(self) -> str:
         return self._status
+
+    @Property(str, notify=changed)
+    def username(self) -> str:
+        return (self._settings.values["username"] or "Guest") if self._settings is not None else "Guest"
 
     @Property(str, notify=changed)
     def mediaName(self) -> str:
@@ -188,8 +198,8 @@ class AppController(QObject):
     def availablePlayers(self) -> list:
         specs = [
             ("builtin", QtMediaPlayer.label, QtMediaPlayer.is_available()),
-            ("mpv", MpvExternalPlayer.label, MpvExternalPlayer.is_available()),
-            ("vlc", VlcExternalPlayer.label, VlcExternalPlayer.is_available()),
+            ("mpv", MpvExternalPlayer.label, MpvExternalPlayer.is_available(self._player_path("mpv"))),
+            ("vlc", VlcExternalPlayer.label, VlcExternalPlayer.is_available(self._player_path("vlc"))),
         ]
         return [
             {"key": key, "label": label, "available": available}
@@ -269,6 +279,8 @@ class AppController(QObject):
     @Slot(str)
     def selectPlayer(self, key: str) -> None:
         self._select_player_internal(key)
+        if self._settings is not None and self._player_key == key and self._settings.values["defaultPlayer"] != key:
+            self._settings.save({"defaultPlayer": key}, False)
         self._notify()
 
     @Slot()
@@ -336,14 +348,34 @@ class AppController(QObject):
 
     # --- player management ---------------------------------------------------
 
+    def _player_path(self, key: str) -> str:
+        return self._settings.values.get(key + "Path", "") if self._settings is not None else ""
+
+    def _player_preferences(self) -> tuple:
+        if self._settings is None:
+            return ()
+        values = self._settings.values
+        return values["defaultPlayer"], values["mpvPath"], values["vlcPath"]
+
+    def _on_preferences_changed(self) -> None:
+        signature = self._player_preferences()
+        if signature != self._preferences_signature:
+            previous = self._preferences_signature
+            self._preferences_signature = signature
+            key = signature[0]
+            if previous[1:] != signature[1:]:
+                self._external = {}
+            self._select_player_internal(key)
+        self._notify()
+
     def _get_player(self, key: str) -> Optional[Player]:
         if key == "builtin":
             return self._builtin
         if key not in self._external:
             if key == "mpv":
-                self._external[key] = MpvExternalPlayer()
+                self._external[key] = MpvExternalPlayer(self._player_path(key))
             elif key == "vlc":
-                self._external[key] = VlcExternalPlayer()
+                self._external[key] = VlcExternalPlayer(self._player_path(key))
             else:
                 return None
         return self._external[key]
@@ -380,7 +412,9 @@ class AppController(QObject):
         previous = self._player
         if previous is new_player:
             return
-        if not new_player.is_available():
+        path = self._player_path(key)
+        available = new_player.is_available(path) if path else new_player.is_available()
+        if not available:
             self.errorOccurred.emit(f"Player '{key}' is not available")
             return
         handoff_position = self._current_position()

@@ -5,24 +5,25 @@ import QtQuick
 // animation timings, plus a couple of shared formatting helpers.
 QtObject {
     // --- Colours -------------------------------------------------------------
-    readonly property color background: "#0E0F13"
-    readonly property color surface: "#16181F"
-    readonly property color surfaceElevated: "#1E212B"
-    readonly property color surfaceHover: "#272B36"
-    readonly property color border: "#2A2E3A"
-
-    readonly property color accent: "#7C5CFF"
-    readonly property color accentHover: "#8E72FF"
-    readonly property color accentPressed: "#6A49F0"
-
-    readonly property color text: "#F5F6FA"
-    readonly property color subtext: "#9AA0AE"
-    readonly property color faint: "#5C6270"
-
-    readonly property color danger: "#FF4D5E"
-    readonly property color success: "#39D98A"
-
-    readonly property color overlayScrim: "#B3000000"
+    readonly property bool isDark: preferences.isDark
+    readonly property var palette: preferences.palette
+    readonly property color background: palette.background
+    readonly property color surface: palette.surface
+    readonly property color surfaceElevated: palette.surfaceElevated
+    readonly property color surfaceHover: palette.surfaceHover
+    readonly property color border: palette.border
+    readonly property color accent: palette.accent
+    readonly property color accentHover: palette.accentHover
+    readonly property color accentPressed: palette.accentPressed
+    readonly property color accentText: palette.accentText
+    readonly property color text: palette.text
+    readonly property color subtext: palette.subtext
+    readonly property color faint: palette.faint
+    readonly property color danger: palette.danger
+    readonly property color success: palette.success
+    readonly property color warning: palette.warning
+    readonly property color overlayScrim: palette.overlayScrim
+    readonly property string fontFamily: "Segoe UI"
 
     // --- Spacing -------------------------------------------------------------
     readonly property int spacingXs: 4
@@ -34,8 +35,8 @@ QtObject {
 
     // --- Radii ---------------------------------------------------------------
     readonly property int radiusSm: 6
-    readonly property int radiusMd: 10
-    readonly property int radiusLg: 16
+    readonly property int radiusMd: 8
+    readonly property int radiusLg: 8
     readonly property int radiusPill: 999
 
     // --- Type scale ----------------------------------------------------------
@@ -47,9 +48,9 @@ QtObject {
     readonly property int fontDisplay: 34
 
     // --- Motion --------------------------------------------------------------
-    readonly property int durFast: 120
-    readonly property int durNormal: 200
-    readonly property int durSlow: 320
+    readonly property int durFast: preferences.values.reduceMotion ? 0 : 120
+    readonly property int durNormal: preferences.values.reduceMotion ? 0 : 200
+    readonly property int durSlow: preferences.values.reduceMotion ? 0 : 320
 
     // --- Helpers -------------------------------------------------------------
     function fmtTime(t) {

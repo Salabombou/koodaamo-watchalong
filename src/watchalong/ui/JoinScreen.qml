@@ -7,6 +7,15 @@ Rectangle {
     id: joinScreen
     color: Theme.background
 
+    IconButton {
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.margins: 16
+        name: "options"
+        text: "Settings"
+        onClicked: ApplicationWindow.window.openSettings()
+    }
+
     // Fade in when the screen appears.
     opacity: 0
     Component.onCompleted: opacity = 1
@@ -131,7 +140,8 @@ Rectangle {
                 }
                 Label {
                     Layout.alignment: Qt.AlignHCenter
-                    text: "Watch together, in sync — peer to peer."
+                    text: "Joining as " + app.username
+                    textFormat: Text.PlainText
                     color: Theme.subtext
                     font.pixelSize: Theme.fontBody
                 }

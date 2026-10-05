@@ -32,7 +32,9 @@ except Exception:  # pragma: no cover - optional dependency
     _HAVE_WIN32 = False
 
 
-def _find_mpv() -> Optional[str]:
+def _find_mpv(executable: str = "") -> Optional[str]:
+    if executable:
+        return executable if os.path.isfile(executable) and (os.name == "nt" or os.access(executable, os.X_OK)) else None
     found = shutil.which("mpv")
     if found:
         return found
@@ -221,8 +223,9 @@ class MpvExternalPlayer(Player):
     key = "mpv"
     label = "mpv (external)"
 
-    def __init__(self) -> None:
+    def __init__(self, executable: str = "") -> None:
         super().__init__()
+        self._executable = executable
         self._worker: Optional[_MpvWorker] = None
 
     @staticmethod
@@ -235,12 +238,12 @@ class MpvExternalPlayer(Player):
         )
 
     @classmethod
-    def is_available(cls) -> bool:
-        return _find_mpv() is not None and (os.name != "nt" or _HAVE_WIN32)
+    def is_available(cls, executable: str = "") -> bool:
+        return _find_mpv(executable) is not None and (os.name != "nt" or _HAVE_WIN32)
 
     def load(self, url: str) -> None:
         if self._worker is None or self._worker.stopped.is_set():
-            binary = _find_mpv()
+            binary = _find_mpv(self._executable)
             if binary is None:
                 raise RuntimeError("mpv executable not found")
             if os.name == "nt" and not _HAVE_WIN32:

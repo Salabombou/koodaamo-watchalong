@@ -13,11 +13,17 @@ ApplicationWindow {
     title: "Koodaamo Watchalong"
     color: Theme.background
 
-    Material.theme: Material.Dark
+    Material.theme: Theme.isDark ? Material.Dark : Material.Light
     Material.accent: Theme.accent
     Material.primary: Theme.accent
     Material.background: Theme.surface
     Material.foreground: Theme.text
+    font.family: Theme.fontFamily
+    font.pixelSize: Theme.fontBody
+    Component.onCompleted: { if (!preferences.firstRunDone) settingsDialog.open(); }
+
+    function openSettings() { settingsDialog.open(); }
+    SettingsDialog { id: settingsDialog }
 
     readonly property bool isFullscreen: visibility === Window.FullScreen
 
@@ -93,6 +99,9 @@ ApplicationWindow {
             id: toastLabel
             anchors.centerIn: parent
             text: toast.message
+            textFormat: Text.PlainText
+            width: Math.min(implicitWidth, root.width - 96)
+            wrapMode: Text.WordWrap
             color: "white"
             font.pixelSize: Theme.fontBody
             font.weight: Font.Medium

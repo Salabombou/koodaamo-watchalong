@@ -29,7 +29,9 @@ log = logging.getLogger(__name__)
 _HTTP_HOST = "127.0.0.1"
 
 
-def _find_vlc() -> Optional[str]:
+def _find_vlc(executable: str = "") -> Optional[str]:
+    if executable:
+        return executable if os.path.isfile(executable) and (os.name == "nt" or os.access(executable, os.X_OK)) else None
     found = shutil.which("vlc")
     if found:
         shim = Path(found).with_suffix(".shim")
@@ -155,20 +157,21 @@ class VlcExternalPlayer(Player):
     key = "vlc"
     label = "VLC (external)"
 
-    def __init__(self) -> None:
+    def __init__(self, executable: str = "") -> None:
         super().__init__()
+        self._executable = executable
         self._worker: Optional[_VlcWorker] = None
 
     @classmethod
-    def is_available(cls) -> bool:
-        return _find_vlc() is not None
+    def is_available(cls, executable: str = "") -> bool:
+        return _find_vlc(executable) is not None
 
     def _command(self, params: dict) -> None:
         if self._worker is not None and not self._worker.stopped.is_set():
             self._worker.commands.put(params)
 
     def load(self, url: str) -> None:
-        binary = _find_vlc()
+        binary = _find_vlc(self._executable)
         if binary is None:
             raise RuntimeError("VLC executable not found")
         self.shutdown()

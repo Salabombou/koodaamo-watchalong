@@ -70,6 +70,12 @@ Item {
         }
 
         IconButton {
+            name: "options"
+            text: "Settings"
+            onClicked: ApplicationWindow.window.openSettings()
+        }
+
+        IconButton {
             name: "leave"
             iconColor: Theme.subtext
             hoverColor: Theme.danger

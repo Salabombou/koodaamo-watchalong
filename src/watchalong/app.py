@@ -13,6 +13,7 @@ from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuickControls2 import QQuickStyle
 
 from .controller import AppController
+from .settings import SettingsController
 
 
 def _ui_dir() -> str:
@@ -41,7 +42,7 @@ def _install_signal_handlers(app: QGuiApplication) -> QTimer:
     return wakeup
 
 
-def _run_forced_update_if_needed(app: QGuiApplication) -> bool:
+def _run_forced_update_if_needed(app: QGuiApplication, preferences: SettingsController) -> bool:
     """Installer builds only: block on launch to apply a mandatory update.
 
     Returns ``True`` if an update was launched and the app should exit, or
@@ -58,6 +59,7 @@ def _run_forced_update_if_needed(app: QGuiApplication) -> bool:
     controller = UpdateController(info)
     engine = QQmlApplicationEngine()
     engine.rootContext().setContextProperty("updater", controller)
+    engine.rootContext().setContextProperty("preferences", preferences)
     engine.load(os.path.join(_ui_dir(), "Updating.qml"))
     if not engine.rootObjects():
         return False
@@ -77,16 +79,19 @@ def main() -> int:
     QQuickStyle.setStyle("Material")
 
     app = QGuiApplication(sys.argv)
-    app.setApplicationName("Koodaamo Watchalong")
+    app.setApplicationName("koodaamo-watchalong")
+    app.setOrganizationName("Koodaamo")
     app.setQuitOnLastWindowClosed(True)
 
-    if _run_forced_update_if_needed(app):
+    preferences = SettingsController()
+    if _run_forced_update_if_needed(app, preferences):
         return 0
 
-    controller = AppController()
+    controller = AppController(settings=preferences)
 
     engine = QQmlApplicationEngine()
     engine.rootContext().setContextProperty("app", controller)
+    engine.rootContext().setContextProperty("preferences", preferences)
 
     qml_path = os.path.join(_ui_dir(), "Main.qml")
     engine.load(qml_path)

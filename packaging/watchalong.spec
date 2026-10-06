@@ -1,16 +1,18 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for the Koodaamo Watchalong Windows executable.
+"""PyInstaller spec for the Koodaamo Watchalong Windows/Linux executables.
 
 Build:
     pyinstaller packaging/watchalong.spec --noconfirm
 
-Output:
-    dist/KoodaamoWatchalong.exe   (single-file, windowed)
+Output (see WATCHALONG_BUNDLE below):
+    dist/KoodaamoWatchalong[.exe]        (single-file, windowed)
+    dist/KoodaamoWatchalong-onedir/      (unpacked bundle, used for the AppImage)
 """
 
 from pathlib import Path
 
 import os
+import sys
 
 from PyInstaller.utils.hooks import collect_all, copy_metadata
 
@@ -92,18 +94,24 @@ a.datas = [d for d in a.datas if _keep(d[0])]
 
 pyz = PYZ(a.pure)
 
-exe = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.datas,
-    [],
-    name="KoodaamoWatchalong",
+# WATCHALONG_BUNDLE selects the output layout(s) from this single analysis:
+#   onefile (default) - dist/KoodaamoWatchalong[.exe]
+#   onedir            - dist/KoodaamoWatchalong-onedir/ (used for the AppImage,
+#                       which is already compressed and must not self-extract)
+#   both              - both of the above
+BUNDLE = os.environ.get("WATCHALONG_BUNDLE", "onefile")
+if BUNDLE not in ("onefile", "onedir", "both"):
+    raise SystemExit(f"Invalid WATCHALONG_BUNDLE: {BUNDLE!r}")
+
+# Stripping debug symbols is safe and shrinks the Linux payload noticeably; it
+# is not supported for Windows PE binaries.
+STRIP = sys.platform.startswith("linux")
+
+_exe_options = dict(
     debug=False,
     bootloader_ignore_signals=False,
-    strip=False,
+    strip=STRIP,
     upx=False,
-    runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -112,3 +120,35 @@ exe = EXE(
     entitlements_file=None,
     icon=icon,
 )
+
+if BUNDLE in ("onefile", "both"):
+    exe = EXE(
+        pyz,
+        a.scripts,
+        a.binaries,
+        a.datas,
+        [],
+        name="KoodaamoWatchalong",
+        runtime_tmpdir=None,
+        **_exe_options,
+    )
+
+if BUNDLE in ("onedir", "both"):
+    # Distinct executable name keeps its intermediate build files separate from
+    # the onefile build above.
+    onedir_exe = EXE(
+        pyz,
+        a.scripts,
+        [],
+        exclude_binaries=True,
+        name="koodaamo-watchalong",
+        **_exe_options,
+    )
+    coll = COLLECT(
+        onedir_exe,
+        a.binaries,
+        a.datas,
+        strip=STRIP,
+        upx=False,
+        name="KoodaamoWatchalong-onedir",
+    )

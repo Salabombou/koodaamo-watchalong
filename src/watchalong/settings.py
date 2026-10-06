@@ -44,6 +44,10 @@ class SettingsController(QObject):
         self._data = defaults()
         self._preview: dict | None = None
         self._load_error = ""
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass  # Reported later if saving fails.
         if self._path.exists():
             try:
                 if self._path.stat().st_size > 262_144:

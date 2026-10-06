@@ -56,15 +56,27 @@ Qt Multimedia (FFmpeg) backend for the built-in player are all bundled; external
 `PATH` or explicitly configured in Settings. Fonts, icons, sounds, and their
 licenses are bundled in both source distributions and standalone builds.
 
+### Linux builds
+
+On Linux, build a portable single-file binary and an AppImage:
+
+```bash
+scripts/build-linux.sh               # --variant portable|appimage|both, --clean
+```
+
+This produces `dist/KoodaamoWatchalong-linux-x86_64` and
+`dist/KoodaamoWatchalong-x86_64.AppImage`. Settings are stored under
+`~/.config/Koodaamo/koodaamo-watchalong/`.
+
 ### Automated releases
 
-Pushing a version tag builds the executable on Windows CI
-([`.github/workflows/release.yml`](.github/workflows/release.yml)) and attaches
-it to a GitHub Release:
+Pushing a version tag builds the Windows executables and the Linux binary and
+AppImage on CI ([`.github/workflows/release.yml`](.github/workflows/release.yml))
+and attaches them to a GitHub Release:
 
 ```powershell
-git tag v0.3.1
-git push origin v0.3.1
+git tag v0.3.2
+git push origin v0.3.2
 ```
 
 ## Usage

@@ -43,6 +43,7 @@ Item {
             Layout.minimumWidth: 0
             spacing: 0
             Label {
+                id: mediaTitle
                 text: app.mediaName.length > 0 ? app.mediaName
                       : (app.isHost ? "No file shared yet" : "Waiting for host…")
                     textFormat: Text.PlainText
@@ -54,6 +55,7 @@ Item {
                 Layout.minimumWidth: 0
             }
             Label {
+                id: playbackStatus
                     text: app.phase === "countdown" ? "Starting together..."
                         : app.playing ? "Playing together" : app.readyCount + "/" + app.requiredCount + " ready"
                 color: Theme.subtext
@@ -62,8 +64,13 @@ Item {
         }
 
         Row {
+            id: transferStatus
+            objectName: "transferStatus"
             spacing: Theme.spacingSm
-            visible: app.hasMedia && topBar.width >= 1050
+            visible: app.hasMedia && topBar.width >= implicitWidth
+                     + Math.max(playbackStatus.implicitWidth, Math.min(160, mediaTitle.implicitWidth))
+                     + participantsButton.implicitWidth + settingsButton.implicitWidth + leaveButton.implicitWidth
+                     + Theme.spacingMd * 4 + Theme.spacingLg * 2
             Layout.alignment: Qt.AlignVCenter
 
             Chip { text: app.peers + (app.peers === 1 ? " peer" : " peers") }
@@ -72,18 +79,21 @@ Item {
         }
 
         IconButton {
+            id: participantsButton
             name: "users"
             text: "Participants"
             onClicked: topBar.participantsRequested()
         }
 
         IconButton {
+            id: settingsButton
             name: "options"
             text: "Settings"
             onClicked: ApplicationWindow.window.openSettings()
         }
 
         IconButton {
+            id: leaveButton
             name: "leave"
             iconColor: Theme.subtext
             hoverColor: Theme.danger

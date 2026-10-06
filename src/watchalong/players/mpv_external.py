@@ -20,7 +20,7 @@ import threading
 import time
 from typing import Optional
 
-from .base import Player
+from .base import Player, _SeekTracker
 
 log = logging.getLogger(__name__)
 
@@ -122,9 +122,15 @@ class _MpvWorker:
         self.error = ""
         self._buffer = b""
         self._media_ready = False
+        self.at_end = False
+        self.seeks = _SeekTracker()
+        self._playing = False
+        self._native_seek = False
         self.thread = threading.Thread(target=self._run, name="mpv-ipc")
 
     def _write(self, command: list) -> None:
+        if command[0] == "seek":
+            self.seeks.expect(float(command[1]))
         self._transport.write(json.dumps({"command": command}).encode("utf-8") + b"\n")
 
     def _run(self) -> None:
@@ -133,7 +139,9 @@ class _MpvWorker:
                 self._binary,
                 f"--input-ipc-server={self._ipc_path}",
                 "--force-window=yes",
-                "--idle=once",
+                "--idle=yes",
+                "--keep-open=yes",
+                "--keep-open-pause=yes",
                 "--pause=yes",
                 "--no-terminal",
                 self._url,
@@ -146,6 +154,8 @@ class _MpvWorker:
                 return
             self._write(["observe_property", 1, "time-pos"])
             self._write(["observe_property", 2, "duration"])
+            self._write(["observe_property", 3, "eof-reached"])
+            self._write(["observe_property", 4, "pause"])
             pending: list[list] = []
             while not self.stopped.is_set():
                 if self._process.poll() is not None:
@@ -157,6 +167,9 @@ class _MpvWorker:
                         break
                     if command[0] == "loadfile":
                         self._media_ready = False
+                        self.at_end = False
+                        self.seeks.reset()
+                        self._native_seek = False
                         self.snapshot = (0.0, 0.0)
                         pending.clear()
                         self._write(command)
@@ -205,14 +218,30 @@ class _MpvWorker:
             return
         if message.get("event") == "file-loaded":
             self._media_ready = True
+            self.at_end = False
+        if message.get("event") == "seek":
+            self.at_end = False
+            self._native_seek = not self.seeks.command_event()
         if message.get("event") != "property-change":
             return
         value = message.get("data")
+        if message.get("name") == "eof-reached" and isinstance(value, bool):
+            self.at_end = value
+            if value and self.snapshot[1] > 0:
+                self.snapshot = (self.snapshot[1], self.snapshot[1])
+                self.seeks.reset(self.snapshot[1])
+            return
+        if message.get("name") == "pause" and isinstance(value, bool):
+            self._playing = not value
+            return
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
             return
         position, duration = self.snapshot
         if message.get("name") == "time-pos":
             position = max(0.0, float(value))
+            if not self.at_end:
+                self.seeks.observe(position, self._playing, self._native_seek)
+                self._native_seek = False
         elif message.get("name") == "duration":
             duration = max(0.0, float(value))
             self._media_ready = duration > 0
@@ -277,6 +306,12 @@ class MpvExternalPlayer(Player):
 
     def get_error(self) -> str:
         return self._worker.error if self._worker is not None else ""
+
+    def is_at_end(self) -> bool:
+        return self._worker is not None and self._worker.at_end
+
+    def take_seek(self) -> float | None:
+        return self._worker.seeks.take() if self._worker is not None else None
 
     def set_volume(self, percent: float) -> None:
         self._command(["set_property", "volume", max(0.0, min(100.0, float(percent)))])

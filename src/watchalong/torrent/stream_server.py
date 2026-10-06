@@ -53,12 +53,12 @@ class StreamServer:
     # --- server thread -------------------------------------------------------
 
     def _run(self) -> None:
-        self._loop = asyncio.new_event_loop()
+        self._loop = asyncio.SelectorEventLoop() if os.name == "nt" else asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
         try:
             app = web.Application()
             app.router.add_get("/video", self._handle_video)  # HEAD uses the same handler
-            self._runner = web.AppRunner(app)
+            self._runner = web.AppRunner(app, handler_cancellation=True)
             self._loop.run_until_complete(self._runner.setup())
             site = web.TCPSite(self._runner, config.STREAM_HOST, config.STREAM_PORT)
             self._loop.run_until_complete(site.start())
@@ -114,10 +114,13 @@ class StreamServer:
 
         try:
             await self._stream_range(response, start, end)
-        except (ConnectionError, asyncio.CancelledError):
+        except asyncio.CancelledError:
+            raise
+        except ConnectionError:
             # Seeking/closing drops the current range request and opens a new
             # one; the broken write is expected, not an error.
             log.debug("Client disconnected during stream")
+            response.force_close()
         except Exception:  # pragma: no cover
             log.exception("Error while streaming range")
         return response

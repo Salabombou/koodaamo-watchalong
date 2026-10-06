@@ -10,7 +10,6 @@ from typing import Optional
 
 from PySide6.QtCore import Property, QObject, QTimer, Qt, Signal, Slot
 
-from . import config
 from .players.base import Player
 from .players.qt_media import QtMediaPlayer
 from .players.mpv_external import MpvExternalPlayer
@@ -449,6 +448,9 @@ class AppController(QObject):
         duration = self._current_duration()
         target = min(seconds, duration) if duration > 0 else seconds
         if self._is_host:
+            if duration > 0 and target >= duration:
+                self._finish_media(duration)
+                return
             self._pause_authoritative(target)
             self._evaluate_readiness()
         else:
@@ -610,7 +612,7 @@ class AppController(QObject):
         if previous is not None and previous is not new_player and previous is not self._builtin:
             previous.shutdown()
         elif previous is self._builtin and previous is not new_player and previous is not None:
-            previous.pause()
+            previous.unload()
 
         self._player = new_player
         self._player_key = key
@@ -678,8 +680,18 @@ class AppController(QObject):
             elif self._player_loading and self._player.is_loaded():
                 self._player_loading = False
                 self._notify()
+            native_seek = self._player.take_seek()
+            if native_seek is not None and self._connected and self._player.is_loaded() and not self._player_error:
+                if self._can_control_seek():
+                    self._player.pause()
+                    self.seekTo(native_seek)
+                else:
+                    self._apply_timeline(force=True)
         position = self._current_position()
         duration = self._current_duration()
+        if self._connected and self._is_host and self._state.phase == "playing" and self._player is not None and self._player.is_at_end():
+            self._finish_media(duration or position)
+            position = self._current_position()
         self._local_position = position
         if position != self._position or duration != self._duration:
             self._position = position
@@ -711,6 +723,9 @@ class AppController(QObject):
             return
         if self.selfIgnored:
             return
+        duration = self._current_duration()
+        if ready and self._is_host and self._state.phase == "paused" and duration > 0 and self._state.position >= duration - 0.05:
+            self._pause_authoritative(0.0)
         self._self_ready = ready
         self._send_member()
         self._notify()
@@ -748,6 +763,9 @@ class AppController(QObject):
     def _evaluate_readiness(self) -> None:
         if not self._is_host or not self.hasMedia or self._transfer_target:
             return
+        duration = self._current_duration()
+        if self._state.phase == "paused" and duration > 0 and self._state.position >= duration - 0.05:
+            return
         if not self._roster.all_ready:
             if self._state.phase in ("playing", "countdown"):
                 self._pause_authoritative()
@@ -777,6 +795,13 @@ class AppController(QObject):
         self._publish(protocol.PAUSE, **self._state.to_dict(), members=self._roster.records(self._self_id))
         self._broadcast_state()
         self._notify()
+
+    def _finish_media(self, duration: float) -> None:
+        self._self_ready = False
+        for member in self._roster.members.values():
+            member.ready = False
+        self._pause_authoritative(duration)
+        self._send_member()
 
     def _cancel_countdown(self) -> None:
         self._start_timer.stop()

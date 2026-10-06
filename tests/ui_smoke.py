@@ -11,7 +11,6 @@ from PIL import Image
 from PySide6.QtCore import QObject, QPoint, QSize, QTimer, Qt, qInstallMessageHandler
 from PySide6.QtGui import QGuiApplication, QResizeEvent
 from PySide6.QtQml import QQmlApplicationEngine
-from PySide6.QtQuick import QQuickItem
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtTest import QTest
 
@@ -261,6 +260,35 @@ def run() -> None:
         guest.loaded = True
         controller._update_participants()
         settle()
+        def check_playback_controls():
+            window.grabWindow()
+            ready = visual_item("readyButton")
+            scrubber = visual_item("playbackSeekBar")
+            background = ready.property("background")
+            scrubber_bottom = scrubber.mapToScene(scrubber.boundingRect().bottomLeft()).y() + 6
+            ready_top = background.mapToScene(background.boundingRect().topLeft()).y()
+            assert ready_top >= scrubber_bottom, f"Ready background overlaps seek input: {ready_top} < {scrubber_bottom}"
+            content = ready.property("contentItem")
+            for item in content.childItems():
+                assert item.mapToScene(item.boundingRect().topLeft()).y() >= scrubber_bottom, "Ready content overlaps seek input"
+            rates = visual_item("transferStatus")
+            if rates is not None:
+                bounds = rates.mapRectToScene(rates.boundingRect())
+                for sibling in rates.parentItem().childItems():
+                    if sibling.objectName() != "transferStatus" and sibling.isVisible():
+                        other_bounds = sibling.mapRectToScene(sibling.boundingRect())
+                        assert not bounds.intersects(other_bounds), f"Rates {bounds} overlap {sibling.metaObject().className()} {other_bounds}"
+
+        check_playback_controls()
+        assert visual_item("transferStatus") is not None, "Rates hidden despite space alongside participants"
+        controller._self_ready = True
+        controller._notify()
+        settle()
+        assert visual_item("readyButton").property("text") == "Unready"
+        check_playback_controls()
+        controller._self_ready = False
+        controller._notify()
+        settle()
         screenshot("room-dark-wide")
         row = visual_item("participantHold_guest")
         assert row is not None and row.isVisible(), "Participant actions were not visible"
@@ -301,9 +329,26 @@ def run() -> None:
         controller._notify()
         settle(50)
         countdown = window.findChild(QObject, "countdownOverlay")
-        assert countdown.property("seconds") == 1
+        assert countdown.property("seconds") == 2
         assert 0.35 < countdown.property("fraction") < 0.65
         screenshot("countdown-half")
+
+        controller._deadline = time.monotonic() + 2.5
+        controller.countdownChanged.emit()
+        settle(50)
+        assert countdown.property("seconds") == 3
+        controller._player_key = "vlc"
+        controller._notify()
+        settle(50)
+        assert visual_item("externalPlaceholder") is None, "Placeholder shown during countdown"
+        screenshot("countdown-external")
+        controller._state.phase = "playing"
+        controller._deadline = 0
+        controller.countdownChanged.emit()
+        controller._notify()
+        settle(50)
+        assert not countdown.isVisible()
+        assert visual_item("externalPlaceholder") is not None
 
         controller._state.phase = "paused"
         controller._deadline = 0
@@ -318,6 +363,7 @@ def run() -> None:
         controller._player_loading = False
         controller._notify()
         resize(720, 480)
+        check_playback_controls()
         screenshot("room-dark-compact")
         preferences.previewTheme("Light")
         settle()

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import queue
+import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -13,14 +15,15 @@ from typing import Callable
 from unittest.mock import Mock, patch
 
 import requests
-from PySide6.QtCore import QCoreApplication
-from PySide6.QtMultimedia import QMediaPlayer
+from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtMultimedia import QMediaPlayer, QVideoSink
 
 from watchalong.controller import AppController
-from watchalong.players.base import Player
-from watchalong.players.mpv_external import MpvExternalPlayer, _IpcTransport
+from watchalong.players.base import Player, _SeekTracker
+from watchalong.players.mpv_external import MpvExternalPlayer, _IpcTransport, _MpvWorker
 from watchalong.players.qt_media import QtMediaPlayer
-from watchalong.players.vlc_external import VlcExternalPlayer, _find_vlc
+from watchalong.players.vlc_external import VlcExternalPlayer, _find_vlc, _VlcWorker
 
 
 class RecordingPlayer(Player):
@@ -28,6 +31,9 @@ class RecordingPlayer(Player):
         super().__init__()
         self.position = position
         self.loaded = True
+        self.duration = 0.0
+        self.ended = False
+        self.native_seek: float | None = None
         self.error = ""
         self.calls: list[tuple] = []
 
@@ -43,12 +49,24 @@ class RecordingPlayer(Player):
     def seek(self, seconds: float) -> None:
         self.calls.append(("seek", seconds))
         self.position = seconds
+        self.ended = self.duration > 0 and seconds >= self.duration
 
     def set_volume(self, percent: float) -> None:
         self.calls.append(("volume", percent))
 
     def get_position(self) -> float:
         return self.position
+
+    def get_duration(self) -> float:
+        return self.duration
+
+    def is_at_end(self) -> bool:
+        return self.ended
+
+    def take_seek(self) -> float | None:
+        position = self.native_seek
+        self.native_seek = None
+        return position
 
     def is_loaded(self) -> bool:
         return self.loaded
@@ -61,6 +79,46 @@ class RecordingPlayer(Player):
 
 
 class ExternalPlayerTests(unittest.TestCase):
+    def test_seek_tracker_ignores_progress_and_our_own_seeks(self) -> None:
+        tracker = _SeekTracker()
+        with patch("watchalong.players.base.time.monotonic", return_value=10.0) as clock:
+            tracker.observe(2.0, True)
+            clock.return_value = 10.25
+            tracker.observe(2.25, True)
+            self.assertIsNone(tracker.take())
+            clock.return_value = 12.0
+            tracker.observe(2.25, True)
+            self.assertIsNone(tracker.take(), "Buffering was mistaken for a native seek")
+            tracker.expect(7.5)
+            tracker.observe(7.5, False)
+            self.assertIsNone(tracker.take())
+            tracker.observe(18.5, False)
+            self.assertEqual(tracker.take(), 18.5)
+            self.assertIsNone(tracker.take())
+
+    def test_mpv_native_seek_events_do_not_echo_commands(self) -> None:
+        worker = _MpvWorker("mpv", "test", "test-pipe")
+        worker._handle_line(b'{"event":"property-change","name":"time-pos","data":2.25}')
+        worker.seeks.expect(7.5)
+        worker._handle_line(b'{"event":"seek"}')
+        worker._handle_line(b'{"event":"property-change","name":"time-pos","data":7.5}')
+        self.assertIsNone(worker.seeks.take())
+        worker._handle_line(b'{"event":"seek"}')
+        worker._handle_line(b'{"event":"property-change","name":"time-pos","data":7.6}')
+        self.assertEqual(worker.seeks.take(), 7.6)
+
+    def test_vlc_native_seek_does_not_echo_http_commands(self) -> None:
+        worker = _VlcWorker("vlc", "test")
+        response = Mock(ok=True)
+        worker._session.get = Mock(return_value=response)
+        try:
+            for position, params in ((2.25, None), (7.5, {"command": "seek", "val": "7.5"}), (18.5, None)):
+                response.json.return_value = {"time": position, "length": 30, "position": position / 30, "state": "paused"}
+                worker._status(params)
+                self.assertEqual(worker.seeks.take(), 18.5 if position == 18.5 else None)
+        finally:
+            worker._session.close()
+
     def test_vlc_discovery_resolves_scoop_launcher(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             launcher = Path(directory) / "vlc.exe"
@@ -99,11 +157,15 @@ class ExternalPlayerTests(unittest.TestCase):
             "watchalong.players.mpv_external._IpcTransport", return_value=transport
         ), patch(
             "watchalong.players.mpv_external.subprocess.Popen", return_value=process
-        ):
+        ) as launch:
             try:
                 player.load("http://127.0.0.1/video")
                 worker = player._worker
                 self.assertTrue(write_started.wait(1))
+                arguments = launch.call_args.args[0]
+                self.assertIn("--idle=yes", arguments)
+                self.assertIn("--keep-open=yes", arguments)
+                self.assertIn("--keep-open-pause=yes", arguments)
                 started = time.monotonic()
                 player.pause()
                 player.seek(12.5)
@@ -191,7 +253,7 @@ class ExternalPlayerTests(unittest.TestCase):
                 player.play()
                 release_connect.set()
                 self.assertTrue(controls_sent.wait(1))
-                self.assertEqual(commands[2:], [
+                self.assertEqual(commands[4:], [
                     ["set_property", "volume", 50.0],
                     ["seek", 12.5, "absolute", "exact"],
                     ["set_property", "pause", False],
@@ -253,13 +315,16 @@ class ExternalPlayerTests(unittest.TestCase):
         try:
             with patch("watchalong.players.vlc_external._find_vlc", return_value="vlc"), patch(
                 "watchalong.players.vlc_external.subprocess.Popen", return_value=process
-            ), patch(
+            ) as launch, patch(
                 "watchalong.players.vlc_external.requests.Session.get", side_effect=stalled_request
             ):
                 started = time.monotonic()
                 player.load("http://127.0.0.1/video")
                 worker = player._worker
                 self.assertTrue(request_started.wait(1), "HTTP worker did not start")
+                arguments = launch.call_args.args[0]
+                self.assertIn("--play-and-pause", arguments)
+                self.assertIn("--no-play-and-exit", arguments)
                 started = time.monotonic()
                 player.pause()
                 player.seek(12.5)
@@ -445,6 +510,26 @@ class QtPlayerTests(unittest.TestCase):
         self.player._on_error(QMediaPlayer.Error.FormatError, "Unsupported format")
         self.assertEqual(self.player.get_error(), "Unsupported format")
 
+    def test_qt_eof_retains_loaded_media(self) -> None:
+        self.media.mediaStatus.return_value = QMediaPlayer.MediaStatus.EndOfMedia
+        self.assertTrue(self.player.is_at_end())
+        self.assertTrue(self.player.is_loaded())
+
+    def test_qt_same_url_reload_clears_old_demuxer(self) -> None:
+        url = "http://127.0.0.1/video?v=1"
+        self.player.load(url)
+        self.player.load(url)
+        sources = [call.args[0].toString() for call in self.media.setSource.call_args_list]
+        self.assertEqual(sources, ["", url, "", url])
+        self.assertEqual(self.media.stop.call_count, 2)
+
+    def test_qt_unload_releases_source_without_detaching_video(self) -> None:
+        self.player.seek(30)
+        self.player.unload()
+        self.assertTrue(self.media.setSource.call_args.args[0].isEmpty())
+        self.media.setVideoOutput.assert_not_called()
+        self.assertIsNone(self.player._pending_seek)
+
 
 class PlayerSwitchTests(unittest.TestCase):
     @classmethod
@@ -481,6 +566,11 @@ class PlayerSwitchTests(unittest.TestCase):
     def test_selecting_current_player_does_not_reload_media(self) -> None:
         self.controller.selectPlayer("builtin")
         self.assertEqual(self.builtin.calls, [])
+
+    def test_switch_away_from_builtin_unloads_its_source(self) -> None:
+        self.builtin.unload = Mock()
+        self.controller.selectPlayer("vlc")
+        self.builtin.unload.assert_called_once_with()
 
     def test_loading_player_keeps_handoff_position(self) -> None:
         self.external.loaded = False
@@ -524,6 +614,10 @@ class PlayerSwitchTests(unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get("WATCHALONG_NATIVE_PLAYERS") == "1", "Native player tests are opt-in")
 class NativePlayerTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.qt_app = QCoreApplication.instance() or QGuiApplication(["native-player-check", "-platform", "offscreen"])
+
     @staticmethod
     def wait_until(predicate: Callable[[], bool], timeout: float = 10.0) -> bool:
         deadline = time.monotonic() + timeout
@@ -531,7 +625,12 @@ class NativePlayerTests(unittest.TestCase):
         while time.monotonic() < deadline:
             if predicate():
                 return True
-            wakeup.wait(0.05)
+            if QCoreApplication.instance() is not None:
+                loop = QEventLoop()
+                QTimer.singleShot(50, loop.quit)
+                loop.exec()
+            else:
+                wakeup.wait(0.05)
         return False
 
     def exercise_player(self, player: Player) -> None:
@@ -560,10 +659,44 @@ class NativePlayerTests(unittest.TestCase):
                         player.pause()
                         self.assertLess(time.monotonic() - started, 0.2)
                         self.assertTrue(self.wait_until(lambda: abs(player.get_position() - 2.25) < 0.08))
+                        self.assertIsNone(player.take_seek(), "App seek echoed as a native seek")
+                        if player.key == "mpv":
+                            transport = _IpcTransport(worker._ipc_path)
+                            try:
+                                self.assertTrue(transport.connect(worker.stopped, timeout=2))
+                                transport.write(b'{"command":["seek",7.5,"absolute","exact"]}\n')
+                            finally:
+                                transport.close()
+                        else:
+                            response = requests.get(
+                                worker._base + "/status.json",
+                                params={"command": "seek", "val": f"{7.5 / player.get_duration() * 100:.8f}%"},
+                                auth=("", worker._password), timeout=2,
+                            )
+                            response.raise_for_status()
+                        native_events = []
+
+                        def received_seek():
+                            position = player.take_seek()
+                            if position is not None:
+                                native_events.append(position)
+                            return bool(native_events)
+
+                        self.assertTrue(self.wait_until(received_seek), f"{player.key} did not report an external seek")
+                        self.assertAlmostEqual(native_events[-1], 7.5, delta=0.08)
                         started = time.monotonic()
                         player.play()
                         self.assertLess(time.monotonic() - started, 0.2)
                         self.assertTrue(self.wait_until(lambda: player.get_position() >= 2.0))
+                        player.seek(player.get_duration() - 0.5)
+                        player.play()
+                        self.assertTrue(self.wait_until(player.is_at_end), f"{player.key} did not retain EOF: {player.get_error()}")
+                        self.assertTrue(player.is_loaded())
+                        self.assertIsNone(worker._process.poll())
+                        player.seek(1.25)
+                        player.pause()
+                        self.assertTrue(self.wait_until(lambda: abs(player.get_position() - 1.25) < 0.08))
+                        self.assertFalse(player.is_at_end())
                         started = time.monotonic()
                         player.pause()
                         player.get_position()
@@ -585,6 +718,82 @@ class NativePlayerTests(unittest.TestCase):
     @unittest.skipUnless(VlcExternalPlayer.is_available(), "VLC is not installed")
     def test_native_vlc_lifecycle(self) -> None:
         self.exercise_player(VlcExternalPlayer())
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "ffmpeg is required to generate the MP4 fixture")
+    def test_native_mp4_http_seeks_and_player_roundtrips(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "video.mp4"
+            subprocess.run([
+                shutil.which("ffmpeg"), "-hide_banner", "-loglevel", "error",
+                "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=24",
+                "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+                "-t", "6", "-c:v", "mpeg4", "-q:v", "3", "-c:a", "aac", str(path),
+            ], check=True, timeout=30, capture_output=True)
+            engine = Mock()
+            engine.file_size.return_value = path.stat().st_size
+            engine.file_path_on_disk.return_value = str(path)
+            engine.piece_length.return_value = 65536
+            engine.file_offset.return_value = 0
+            engine.have_piece.return_value = True
+            with patch("watchalong.controller.TorrentEngine", return_value=engine), patch(
+                "watchalong.torrent.stream_server.config.STREAM_PORT", 0
+            ):
+                controller = AppController()
+            controller._player = controller._builtin
+            controller._player_key = "builtin"
+            controller._is_host = True
+            controller._state.media_id = "movie"
+            controller._state.media_magnet = "magnet:test"
+            builtin = controller._builtin
+            sink = QVideoSink()
+            builtin._player.setVideoSink(sink)
+            workers = []
+            try:
+                controller.setVolume(0)
+                controller._load_current_player(0.0)
+                self.assertTrue(self.wait_until(lambda: builtin.is_loaded() or bool(builtin.get_error())))
+                self.assertEqual(builtin.get_error(), "")
+                builtin.play()
+                self.assertTrue(self.wait_until(lambda: builtin.get_position() > 0.25 or bool(builtin.get_error())), "HTTP playback never started before seeking")
+                builtin.pause()
+                for key, factory in (("mpv", MpvExternalPlayer), ("vlc", VlcExternalPlayer)):
+                    if not factory.is_available():
+                        continue
+                    for target in (4.25, 1.25):
+                        builtin.seek(target)
+                        builtin.play()
+                        self.assertTrue(
+                            self.wait_until(lambda: builtin.get_position() > target + 0.25 or bool(builtin.get_error())),
+                            f"position={builtin.get_position()}, target={target}, status={builtin._player.mediaStatus()}, state={builtin._player.playbackState()}",
+                        )
+                        builtin.pause()
+                        self.assertEqual(builtin.get_error(), "")
+                    target = builtin.get_position()
+                    controller.selectPlayer(key)
+                    external = controller._player
+                    workers.append(external._worker)
+                    self.assertTrue(self.wait_until(lambda: external.is_loaded() or bool(external.get_error())))
+                    self.assertEqual(external.get_error(), "")
+                    self.assertTrue(self.wait_until(lambda: abs(external.get_position() - target) < 0.15))
+                    controller.selectPlayer("builtin")
+                    self.assertTrue(self.wait_until(lambda: builtin.is_loaded() or bool(builtin.get_error())))
+                    self.assertEqual(builtin.get_error(), "")
+                    self.assertTrue(self.wait_until(lambda: abs(builtin.get_position() - target) < 0.15))
+                builtin.seek(builtin.get_duration() - 0.25)
+                builtin.play()
+                self.assertTrue(self.wait_until(builtin.is_at_end))
+                self.assertTrue(builtin.is_loaded())
+                builtin.seek(0.5)
+                builtin.play()
+                self.assertTrue(self.wait_until(lambda: builtin.get_position() > 0.75 or bool(builtin.get_error())))
+                self.assertEqual(builtin.get_error(), "")
+            finally:
+                controller.shutdown()
+                controller._stream._thread.join(3)
+                self.assertFalse(controller._stream._thread.is_alive())
+                for worker in workers:
+                    worker.thread.join(3)
+                    self.assertFalse(worker.thread.is_alive())
 
 
 if __name__ == "__main__":

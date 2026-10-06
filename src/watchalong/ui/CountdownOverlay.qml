@@ -5,15 +5,15 @@ Item {
     id: countdown
     objectName: "countdownOverlay"
     property real remaining: app.countdownRemaining
-    readonly property int seconds: Math.floor(remaining)
-    readonly property real fraction: remaining > 0 ? (remaining % 1 || 1) : 0
+    readonly property int seconds: Math.ceil(remaining)
+    readonly property real fraction: remaining > 0 ? remaining - (seconds - 1) : 0
+    readonly property bool counting: app.phase === "countdown" && remaining > 0
     property int lastSecond: -1
     onSecondsChanged: {
-        if (visible && seconds !== lastSecond && seconds >= 0) Sounds.tick();
+        if (counting && seconds !== lastSecond && seconds > 0) Sounds.tick();
         lastSecond = seconds;
     }
-    onVisibleChanged: { if (visible) Sounds.tick(); else lastSecond = -1; }
-    visible: app.phase === "countdown" && remaining > 0
+    visible: counting
     width: 160
     height: 160
     Rectangle { anchors.fill: parent; radius: 80; color: Theme.surface; opacity: 0.92 }

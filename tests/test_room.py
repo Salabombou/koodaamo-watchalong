@@ -346,6 +346,71 @@ class RoomFlowTests(unittest.TestCase):
         self.assertEqual(self.host.phase, "countdown")
         self.assertEqual(self.guest.currentPosition(), 18.5)
 
+    def test_eof_retains_media_and_stops_until_everyone_readies_again(self) -> None:
+        self.begin_playback()
+        for controller in (self.host, self.guest):
+            controller._player.duration = 60.0
+        self.host._player.position = 60.0
+        self.host._player.ended = True
+        self.host._refresh_playback()
+        self.bus.flush()
+        for controller in (self.host, self.guest):
+            self.assertEqual(controller.phase, "paused")
+            self.assertFalse(controller.selfReady)
+            self.assertTrue(controller.hasMedia)
+            self.assertTrue(controller._player.is_loaded())
+            self.assertEqual(controller.currentPosition(), 60.0)
+            self.assertFalse(controller._start_timer.isActive())
+        self.host._send_heartbeat()
+        self.bus.flush()
+        self.assertEqual(self.host.phase, "paused")
+        self.ready_everyone()
+        for controller in (self.host, self.guest):
+            self.assertEqual(controller.phase, "countdown")
+            self.assertEqual(controller.currentPosition(), 0.0)
+
+    def test_seeking_to_eof_does_not_restart_a_finished_countdown(self) -> None:
+        self.begin_playback()
+        self.host._player.duration = 60.0
+        self.host.seekTo(60.0)
+        self.bus.flush()
+        self.assertEqual(self.host.phase, "paused")
+        self.assertFalse(self.host.selfReady)
+        self.assertFalse(self.host._start_timer.isActive())
+
+    def test_native_host_seek_schedules_the_shared_countdown(self) -> None:
+        self.begin_playback()
+        self.host._player.native_seek = 18.5
+        self.host._player.position = 18.5
+        self.host._refresh_playback()
+        self.bus.flush()
+        self.assertEqual(self.host.phase, "countdown")
+        self.assertEqual(self.guest.phase, "countdown")
+        self.assertEqual(self.guest.currentPosition(), 18.5)
+        self.assertEqual(self.host._state.start_at, self.guest._state.start_at)
+
+    def test_allowed_native_guest_seek_schedules_the_shared_countdown(self) -> None:
+        self.begin_playback()
+        self.host.setOptions(False, True)
+        self.bus.flush()
+        self.guest._player.native_seek = 18.5
+        self.guest._player.position = 18.5
+        self.guest._refresh_playback()
+        self.bus.flush()
+        self.assertEqual(self.host.phase, "countdown")
+        self.assertEqual(self.guest.phase, "countdown")
+        self.assertEqual(self.host.currentPosition(), 18.5)
+
+    def test_forbidden_native_seek_restores_the_authoritative_timeline(self) -> None:
+        self.begin_playback()
+        self.guest._player.native_seek = 18.5
+        self.guest._player.position = 18.5
+        self.guest._refresh_playback()
+        self.bus.flush()
+        self.assertTrue(self.host.playing)
+        self.assertTrue(self.guest.playing)
+        self.assertGreater(self.guest.currentPosition(), 42.0)
+
 
 if __name__ == "__main__":
     unittest.main()

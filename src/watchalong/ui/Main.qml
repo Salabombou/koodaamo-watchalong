@@ -26,7 +26,6 @@ ApplicationWindow {
     SettingsDialog { id: settingsDialog }
     property bool lastConnected: false
     property bool lastReady: false
-    property bool lastPlaying: false
 
     readonly property bool isFullscreen: visibility === Window.FullScreen
 
@@ -83,8 +82,6 @@ ApplicationWindow {
                 app.selfReady ? Sounds.ready() : Sounds.unready();
                 root.lastReady = app.selfReady;
             }
-            if (!root.lastPlaying && app.playing) Sounds.ready();
-            root.lastPlaying = app.playing;
         }
     }
 

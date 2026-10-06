@@ -53,12 +53,14 @@ class QtMediaPlayer(Player):
     # --- lifecycle -----------------------------------------------------------
 
     def load(self, url: str) -> None:
-        # Stop and clear first so re-loading a new video (served from the same
-        # local URL) always restarts instead of resuming the previous stream.
+        self.unload()
+        self._player.setSource(QUrl(url))
+
+    def unload(self) -> None:
         self._error = ""
         self._pending_seek = None
         self._player.stop()
-        self._player.setSource(QUrl(url))
+        self._player.setSource(QUrl())
 
     def play(self) -> None:
         self._player.play()
@@ -68,9 +70,9 @@ class QtMediaPlayer(Player):
 
     def set_paused(self, paused: bool) -> None:
         if paused:
-            self._player.pause()
+            self.pause()
         else:
-            self._player.play()
+            self.play()
 
     def seek(self, seconds: float) -> None:
         if not self.is_loaded():
@@ -95,6 +97,9 @@ class QtMediaPlayer(Player):
     def get_error(self) -> str:
         return self._error
 
+    def is_at_end(self) -> bool:
+        return self._player.mediaStatus() == QMediaPlayer.MediaStatus.EndOfMedia
+
     def set_volume(self, percent: float) -> None:
         self._audio.setVolume(max(0.0, min(1.0, percent / 100.0)))
 
@@ -102,7 +107,7 @@ class QtMediaPlayer(Player):
         return self._audio.volume() * 100.0
 
     def shutdown(self) -> None:
-        self._player.stop()
+        self.unload()
         self._player.setVideoOutput(None)
 
     # --- signals -------------------------------------------------------------

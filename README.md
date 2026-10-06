@@ -63,8 +63,8 @@ Pushing a version tag builds the executable on Windows CI
 it to a GitHub Release:
 
 ```powershell
-git tag v0.3.0
-git push origin v0.3.0
+git tag v0.3.1
+git push origin v0.3.1
 ```
 
 ## Usage
@@ -119,13 +119,19 @@ git push origin v0.3.0
 ## Checks
 
 ```powershell
+pip install -e ".[dev]"
+ruff check src tests
 python -m unittest discover -s tests -v
+python -m compileall -q src tests
 python tests/ui_smoke.py --screenshots build/ui-check
 # Include installed native mpv/VLC lifecycle and fractional-seek checks:
 $env:WATCHALONG_NATIVE_PLAYERS = '1'
 python -m unittest discover -s tests -v
 Remove-Item Env:\WATCHALONG_NATIVE_PLAYERS
 ```
+
+GitHub Actions runs lint, unit tests, Python compilation, and the UI smoke test
+on pushes to `main` and pull requests.
 
 ## Notes & limitations
 

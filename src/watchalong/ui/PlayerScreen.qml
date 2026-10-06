@@ -93,11 +93,12 @@ Rectangle {
 
     // Placeholder shown for external players or when nothing is loaded.
     ColumnLayout {
+        objectName: "externalPlaceholder"
         anchors.centerIn: parent
         anchors.horizontalCenterOffset: -playerScreen.panelWidth / 2
         width: Math.min(parent.width - Theme.spacingXxl * 2, 420)
         spacing: Theme.spacingLg
-        visible: !playerScreen.loading && app.playerError.length === 0
+        visible: !playerScreen.loading && app.playerError.length === 0 && app.phase !== "countdown"
              && (!app.hasMedia || !playerScreen.isBuiltin)
 
         Rectangle {

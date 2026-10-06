@@ -25,7 +25,9 @@ Item {
         spacing: Theme.spacingSm
 
         SeekBar {
+            objectName: "playbackSeekBar"
             Layout.fillWidth: true
+            Layout.minimumHeight: implicitHeight
             duration: app.duration
             position: app.position
             buffered: app.progress
@@ -35,6 +37,7 @@ Item {
 
         RowLayout {
             Layout.fillWidth: true
+            Layout.minimumHeight: implicitHeight
             spacing: Theme.spacingXs
 
             Button {
@@ -43,12 +46,21 @@ Item {
                 implicitWidth: 108
                 Layout.minimumWidth: 108
                 implicitHeight: 44
+                topInset: 0
+                bottomInset: 0
+                topPadding: 8
+                bottomPadding: 8
                 leftPadding: 12
                 rightPadding: 12
                 enabled: app.canReady
                 highlighted: app.selfReady
                 icon.source: app.selfReady ? "icons/pause.svg" : "icons/play.svg"
                 icon.color: app.selfReady ? Theme.accentText : Theme.text
+                background: Rectangle {
+                    radius: Theme.radiusSm
+                    color: app.selfReady ? parent.down ? Theme.accentPressed : parent.hovered ? Theme.accentHover : Theme.accent
+                                         : parent.down || parent.hovered ? Theme.surfaceHover : Theme.surfaceElevated
+                }
                 onClicked: app.toggleReady()
                 ToolTip.visible: hovered && app.selfIgnored
                 ToolTip.text: "The host has ignored you"

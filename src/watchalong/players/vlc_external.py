@@ -22,7 +22,7 @@ from typing import Optional
 
 import requests
 
-from .base import Player
+from .base import Player, _SeekTracker
 
 log = logging.getLogger(__name__)
 
@@ -66,11 +66,15 @@ class _VlcWorker:
         self.stopped = threading.Event()
         self.snapshot = (0.0, 0.0)
         self.media_ready = False
+        self.at_end = False
+        self.seeks = _SeekTracker()
         self.error = ""
         self.thread = threading.Thread(target=self._run, name="vlc-http")
 
     def _status(self, params: Optional[dict] = None) -> Optional[dict]:
         try:
+            if params is not None and params.get("command") == "seek":
+                self.seeks.expect(float(params["val"]))
             if params is not None and params.get("command") == "seek" and self.snapshot[1] > 0:
                 percent = max(0.0, min(100.0, float(params["val"]) / self.snapshot[1] * 100.0))
                 params = {**params, "val": f"{percent:.8f}%"}
@@ -90,6 +94,11 @@ class _VlcWorker:
                         position = float(fraction) * duration
                     if math.isfinite(position) and math.isfinite(duration):
                         self.snapshot = (max(0.0, position), max(0.0, duration))
+                        self.at_end = status.get("state") == "paused" and duration > 0 and position >= duration - 0.25
+                        if self.at_end:
+                            self.seeks.reset(duration)
+                        else:
+                            self.seeks.observe(position, status.get("state") == "playing")
                     return status
         except (requests.RequestException, ValueError, TypeError):
             pass
@@ -109,6 +118,10 @@ class _VlcWorker:
                 "--http-password", self._password,
                 "--no-one-instance",
                 "--start-paused",
+                "--play-and-pause",
+                "--no-play-and-exit",
+                "--no-repeat",
+                "--no-loop",
                 "--no-video-title-show",
                 self._url,
             ]
@@ -204,6 +217,12 @@ class VlcExternalPlayer(Player):
 
     def get_error(self) -> str:
         return self._worker.error if self._worker is not None else ""
+
+    def is_at_end(self) -> bool:
+        return self._worker is not None and self._worker.at_end
+
+    def take_seek(self) -> float | None:
+        return self._worker.seeks.take() if self._worker is not None else None
 
     def set_volume(self, percent: float) -> None:
         # VLC HTTP volume is 0-256 for 0-100%.

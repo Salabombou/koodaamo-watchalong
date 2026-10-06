@@ -39,15 +39,6 @@ jobs:
             dist/KoodaamoWatchalong-Setup.exe
           if-no-files-found: error
 
-      - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/KoodaamoWatchalong.exe
-            dist/KoodaamoWatchalong-Setup.exe
-          generate_release_notes: true
-
   linux-appimage:
     # Build on the oldest supported runner: glibc is backward- but not
     # forward-compatible, so this lets the binaries run on more distros.
@@ -80,11 +71,26 @@ jobs:
             dist/KoodaamoWatchalong-linux-x86_64
           if-no-files-found: error
 
+  # Publish once, after every build has succeeded. Separate per-job publishing
+  # raced on creating the release and could leave it with missing assets.
+  publish:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [windows-exe, linux-appimage]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            dist/KoodaamoWatchalong.exe
+            dist/KoodaamoWatchalong-Setup.exe
             dist/KoodaamoWatchalong-x86_64.AppImage
             dist/KoodaamoWatchalong-linux-x86_64
+          fail_on_unmatched_files: true
           generate_release_notes: true
